@@ -10,7 +10,6 @@ import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
-import android.hardware.camera2.params.StreamConfigurationMap
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -18,11 +17,9 @@ import android.os.HandlerThread
 import android.provider.MediaStore
 import android.util.Range
 import android.util.Size
-import android.view.Gravity
 import android.view.Surface
 import android.view.TextureView
 import android.view.ViewGroup
-import android.widget.FrameLayout
 import androidx.core.content.ContextCompat
 import com.example.camera2app.camera.OrientationUtil.getJpegOrientation
 import java.nio.ByteBuffer
@@ -30,14 +27,13 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.roundToInt
 
 class Camera2Controller(
     private val context: Context,
     private val textureView: TextureView,
     private val onFrameLevelChanged: (rollDeg: Float) -> Unit,
     private val onSaved: (Uri) -> Unit,
-    private val previewContainer: ViewGroup,          // ← 미리보기 컨테이너(가로 유지, 세로만 변경)
+    private val previewContainer: ViewGroup
 ) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
@@ -57,7 +53,6 @@ class Camera2Controller(
     private var expRange: Range<Int> = Range(0, 0)
     private var currentExp = 0
 
-    // 수동 조절
     private var manualEnabled = false
     private var isoRange: Range<Int> = Range(100, 1600)
     private var exposureTimeRange: Range<Long> = Range(1_000_000L, 100_000_000L)
@@ -65,46 +60,21 @@ class Camera2Controller(
     private var currentExposureNs = 8_000_000L
     private var currentAwbMode = CameraMetadata.CONTROL_AWB_MODE_AUTO
 
-    // 렌즈 방향
     private var lensFacing: Int = CameraCharacteristics.LENS_FACING_BACK
-
-    // 원하는 화면비(가로/세로). 기본 4:3
-    private var desiredAspect: Float = 4f / 3f
-
-    fun getExposureCompRange(): Range<Int> = expRange
-    fun getCurrentExposureComp(): Int = currentExp
 
     fun setManualEnabled(b: Boolean) { manualEnabled = b; updateRepeating() }
     fun setIso(v: Int) { currentIso = v.coerceIn(isoRange.lower, isoRange.upper); updateRepeating() }
     fun setExposureTimeNs(ns: Long) { currentExposureNs = ns.coerceIn(exposureTimeRange.lower, exposureTimeRange.upper); updateRepeating() }
     fun setAwbMode(mode: Int) { currentAwbMode = mode; updateRepeating() }
-
-    /** 외부에서 화면비 토글할 때 호출 (예: 4:3, 16:9, 1:1) */
-    fun setAspectRatio(ratio: Float) {
-        desiredAspect = ratio
-        // 컨테이너 세로만 조절(가로는 match_parent), 가운데 정렬
-        previewContainer.post {
-            val w = previewContainer.width
-            if (w > 0) {
-                val h = (w / desiredAspect).roundToInt()
-                val lp = (previewContainer.layoutParams as? FrameLayout.LayoutParams)
-                    ?: FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                    )
-                lp.width = ViewGroup.LayoutParams.MATCH_PARENT
-                lp.height = h
-                lp.gravity = Gravity.CENTER
-                previewContainer.layoutParams = lp
-            }
-            applyCenterCropTransform()
-        }
-        // 카메라 세션도 같은 비율의 사이즈로 재시작
-        restartSessionForAspect()
-    }
+    fun setExposureCompensation(value: Int) { currentExp = value.coerceIn(expRange.lower, expRange.upper); updateRepeating() }
+    fun setZoom(zoomX: Float) { currentZoom = zoomX.coerceIn(1f, maxZoom()); updateRepeating() }
 
     fun onResume() {
         startBackground()
+        // 레이아웃 변동 시 항상 트랜스폼 재적용
+        textureView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            applyCenterCropTransform()
+        }
         if (textureView.isAvailable) openCamera(textureView.width, textureView.height)
         else textureView.surfaceTextureListener = surfaceListener
     }
@@ -116,7 +86,7 @@ class Camera2Controller(
 
     private val surfaceListener = object : TextureView.SurfaceTextureListener {
         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) = openCamera(w, h)
-        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) { applyCenterCropTransform() }
+        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) = applyCenterCropTransform()
         override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
         override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
     }
@@ -128,14 +98,13 @@ class Camera2Controller(
 
         cameraId = findCameraIdFor(lensFacing)
         chars = cameraManager.getCameraCharacteristics(cameraId)
-        sensorArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: Rect(0, 0, 0, 0)
+        sensorArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: Rect()
 
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) as StreamConfigurationMap
-        // 원하는 비율에 가장 근접한 사이즈 선택
-        previewSize = chooseSizeByAspect(
-            (map.getOutputSizes(SurfaceTexture::class.java) ?: arrayOf(Size(1280, 720))).toList(),
-            desiredAspect
-        )
+        // 뷰 비율에 가장 가까운 프리뷰 사이즈 선택 (왜곡/크롭 최소화)
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
+        val out = map.getOutputSizes(SurfaceTexture::class.java).toList()
+        val viewAspect = if (viewW > 0 && viewH > 0) viewW.toFloat() / viewH else 9f/16f
+        previewSize = chooseByAspect(out, viewAspect)
 
         expRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0)
         currentExp = currentExp.coerceIn(expRange.lower, expRange.upper)
@@ -152,17 +121,19 @@ class Camera2Controller(
             setOnImageAvailableListener({ r ->
                 val img = r.acquireNextImage() ?: return@setOnImageAvailableListener
                 val buf: ByteBuffer = img.planes[0].buffer
-                val bytes = ByteArray(buf.remaining())
-                buf.get(bytes)
+                val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
                 img.close()
-                val uri = saveJpeg(bytes); onSaved(uri)
+                onSaved(saveJpeg(bytes))
             }, bgHandler)
         }
 
         cameraManager.openCamera(cameraId, deviceCallback, bgHandler)
+    }
 
-        // 컨테이너도 현재 비율로 즉시 갱신
-        setAspectRatio(desiredAspect)
+    private fun chooseByAspect(candidates: List<Size>, target: Float): Size {
+        val sorted = candidates.filter { it.width > 0 && it.height > 0 }
+            .sortedByDescending { it.width * it.height }
+        return sorted.minByOrNull { abs(it.width / it.height.toFloat() - target) } ?: sorted.first()
     }
 
     private fun findCameraIdFor(facing: Int): String {
@@ -174,10 +145,7 @@ class Camera2Controller(
     }
 
     private val deviceCallback = object : CameraDevice.StateCallback() {
-        override fun onOpened(device: CameraDevice) {
-            cameraDevice = device
-            startPreview()
-        }
+        override fun onOpened(device: CameraDevice) { cameraDevice = device; startPreview() }
         override fun onDisconnected(device: CameraDevice) { device.close(); cameraDevice = null }
         override fun onError(device: CameraDevice, error: Int) { device.close(); cameraDevice = null }
     }
@@ -195,46 +163,14 @@ class Camera2Controller(
                     val req = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                         addTarget(previewSurface)
                         applyCommonControls(this, preview = true)
-                        applyColorAuto(this)                 // 노란화면 방지
+                        applyColorAuto(this)
                     }
-                    s.setRepeatingRequest(req.build(), captureCallback, bgHandler)
-                    textureView.post { applyCenterCropTransform() } // 센터 크롭
+                    s.setRepeatingRequest(req.build(), null, bgHandler)
+                    textureView.post { applyCenterCropTransform() }
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {}
             }, bgHandler)
     }
-
-    private fun restartSessionForAspect() {
-        if (!this::chars.isInitialized || cameraDevice == null) return
-        closeOnlySession()
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
-        previewSize = chooseSizeByAspect(
-            map.getOutputSizes(SurfaceTexture::class.java).toList(),
-            desiredAspect
-        )
-        imageReader?.close()
-        imageReader = android.media.ImageReader.newInstance(
-            previewSize.width, previewSize.height, ImageFormat.JPEG, 2
-        ).apply {
-            setOnImageAvailableListener({ r ->
-                val img = r.acquireNextImage() ?: return@setOnImageAvailableListener
-                val buf = img.planes[0].buffer
-                val bytes = ByteArray(buf.remaining()); buf.get(bytes); img.close()
-                onSaved(saveJpeg(bytes))
-            }, bgHandler)
-        }
-        startPreview()
-    }
-
-    // 후보 중에서 비율이 가장 가까운 사이즈 선택(해상도는 큰 것 우선)
-    private fun chooseSizeByAspect(candidates: List<Size>, aspect: Float): Size {
-        val sorted = candidates
-            .filter { it.width > 0 && it.height > 0 }
-            .sortedByDescending { it.width * it.height }
-        return sorted.minByOrNull { abs(it.width / it.height.toFloat() - aspect) } ?: sorted.first()
-    }
-
-    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {}
 
     fun takePicture() {
         val jpegSurface = imageReader?.surface ?: return
@@ -247,13 +183,11 @@ class Camera2Controller(
         session?.capture(req.build(), null, bgHandler)
     }
 
-    /** 노란 화면 방지용: 자동 색상/화이트밸런스 강제 */
     private fun applyColorAuto(builder: CaptureRequest.Builder) {
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
         builder.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
         builder.set(CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
         builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-        builder.set(CaptureRequest.CONTROL_AWB_LOCK, false)
         builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_FAST)
     }
 
@@ -267,15 +201,54 @@ class Camera2Controller(
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
         } else {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-            builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentExp)
         }
         applyZoom(builder)
     }
 
-    fun setZoom(zoomX: Float) { currentZoom = zoomX.coerceIn(1f, maxZoom()); updateRepeating() }
-    fun setExposureCompensation(value: Int) { currentExp = value.coerceIn(expRange.lower, expRange.upper); updateRepeating() }
+    /** 🔥 풀스크린 센터-크롭 (회전 보정 포함) */
+    /** 풀스크린 센터-크롭 (회전 포함, 중심 pivot) */
+    fun applyCenterCropTransform() {
+        val vw = textureView.width.toFloat()
+        val vh = textureView.height.toFloat()
+        if (vw <= 0f || vh <= 0f || previewSize.width <= 0 || previewSize.height <= 0) return
+
+        val rotation = textureView.display?.rotation ?: Surface.ROTATION_0
+        val matrix = Matrix()
+
+        val viewRect = android.graphics.RectF(0f, 0f, vw, vh)
+        val centerX = viewRect.centerX()
+        val centerY = viewRect.centerY()
+
+        // 버퍼 크기: 90/270 회전에선 가로세로가 뒤집혀 들어옴
+        val bufW: Float
+        val bufH: Float
+        val degrees: Float
+        when (rotation) {
+            Surface.ROTATION_90 -> { bufW = previewSize.height.toFloat(); bufH = previewSize.width.toFloat(); degrees = 90f }
+            Surface.ROTATION_270 -> { bufW = previewSize.height.toFloat(); bufH = previewSize.width.toFloat(); degrees = 270f }
+            Surface.ROTATION_180 -> { bufW = previewSize.width.toFloat();  bufH = previewSize.height.toFloat(); degrees = 180f }
+            else -> { bufW = previewSize.width.toFloat();  bufH = previewSize.height.toFloat(); degrees = 0f }
+        }
+
+        // 버퍼 사각형을 "화면 중앙"에 맞춰놓고, FILL(센터-크롭)로 매핑
+        val bufferRect = android.graphics.RectF(0f, 0f, bufW, bufH)
+        bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
+
+        // 1) 화면 → 버퍼로 FILL 매핑 (크롭되더라도 여백 없이 채우기)
+        matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
+
+        // 2) 혹시 부족하면 한 번 더 스케일을 보정 (정밀 채우기)
+        val scale = kotlin.math.max(vh / bufH, vw / bufW)
+        matrix.postScale(scale, scale, centerX, centerY)
+
+        // 3) 회전은 항상 "화면 중심" 기준으로
+        if (degrees != 0f) matrix.postRotate(degrees, centerX, centerY)
+
+        textureView.setTransform(matrix)
+    }
 
     private fun updateRepeating() {
         val st = textureView.surfaceTexture ?: return
@@ -285,31 +258,8 @@ class Camera2Controller(
             applyCommonControls(this, preview = true)
             applyColorAuto(this)
         } ?: return
-        session?.setRepeatingRequest(req.build(), captureCallback, bgHandler)
+        session?.setRepeatingRequest(req.build(), null, bgHandler)
         textureView.post { applyCenterCropTransform() }
-    }
-
-    /** 프리뷰 정중앙 기준 센터 크롭 */
-    fun applyCenterCropTransform() {
-        val viewW = textureView.width.toFloat()
-        val viewH = textureView.height.toFloat()
-        if (viewW <= 0f || viewH <= 0f ||
-            previewSize.width <= 0 || previewSize.height <= 0) return
-
-        val bufferW = previewSize.width.toFloat()
-        val bufferH = previewSize.height.toFloat()
-
-        // view를 꽉 채우도록 scale 선택(가로는 유지, 세로 크롭/패드)
-        val scale = max(viewW / bufferW, viewH / bufferH)
-        val scaledW = bufferW * scale
-        val scaledH = bufferH * scale
-        val dx = (viewW - scaledW) / 2f
-        val dy = (viewH - scaledH) / 2f
-
-        val matrix = Matrix()
-        matrix.setScale(scale, scale)
-        matrix.postTranslate(dx, dy)
-        textureView.setTransform(matrix)
     }
 
     private fun maxZoom(): Float {
@@ -318,9 +268,8 @@ class Camera2Controller(
     }
 
     private fun applyZoom(builder: CaptureRequest.Builder) {
-        val zoom = currentZoom
-        val cropW = (sensorArray.width() / zoom).toInt()
-        val cropH = (sensorArray.height() / zoom).toInt()
+        val cropW = (sensorArray.width() / currentZoom).toInt()
+        val cropH = (sensorArray.height() / currentZoom).toInt()
         val left = (sensorArray.centerX() - cropW / 2).coerceAtLeast(0)
         val top = (sensorArray.centerY() - cropH / 2).coerceAtLeast(0)
         builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(left, top, left + cropW, top + cropH))
@@ -358,10 +307,6 @@ class Camera2Controller(
         bgHandler = null
     }
 
-    private fun closeOnlySession() {
-        session?.close(); session = null
-    }
-
     private fun closeSession() {
         session?.close(); session = null
         cameraDevice?.close(); cameraDevice = null
@@ -372,8 +317,10 @@ class Camera2Controller(
         lensFacing = if (lensFacing == CameraCharacteristics.LENS_FACING_BACK)
             CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
         closeSession()
-        val w = textureView.width; val h = textureView.height
+        val w = textureView.width
+        val h = textureView.height
         if (w > 0 && h > 0) openCamera(w, h)
         else textureView.surfaceTextureListener = surfaceListener
     }
+
 }
