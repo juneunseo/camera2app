@@ -1,21 +1,32 @@
 package com.example.camera2app
 
 import android.Manifest
-import android.app.AlertDialog
-import android.hardware.camera2.CameraMetadata
+import android.annotation.SuppressLint
 import android.os.Build
 import android.os.Bundle
+import android.view.View
+import android.view.ViewGroup
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.example.camera2app.camera.Camera2Controller
 import com.example.camera2app.databinding.ActivityMainBinding
 import com.example.camera2app.util.GalleryUtils
 import com.example.camera2app.util.Permissions
+import kotlin.math.abs
+
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var controller: Camera2Controller
+
+    // 오버레이 구분용 태그
+    private val TAG_ISO = "overlay_iso"
+    private val TAG_SHT = "overlay_shutter"
+    private val TAG_WB  = "overlay_wb"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,100 +50,243 @@ class MainActivity : AppCompatActivity() {
         binding.btnGallery.setOnClickListener { GalleryUtils.openSystemPicker(this) }
         binding.btnSwitch.setOnClickListener { controller.switchCamera() }
 
-        binding.btnIso.setOnClickListener { showIsoQuickDialog() }
-        binding.btnWb.setOnClickListener { showWbQuickDialog() }
-        binding.btnSec.setOnClickListener { showShutterQuickDialog() }
-        // ⚠️ Aspect 관련 UI/로직 전부 삭제
+        // 오버레이 버전으로 교체
+        binding.btnIso.setOnClickListener { showIsoOverlay() }
+        binding.btnSec.setOnClickListener { showShutterOverlay() }
+        binding.btnWb.setOnClickListener  { showWbOverlay() }
     }
 
-    private fun showIsoQuickDialog() {
-        controller.setManualEnabled(true)
-        val seek = SeekBar(this).apply { max = 6400; progress = 400; setPadding(24,24,24,8) }
-        val tv = TextView(this).apply { setPadding(24,0,24,16) }
-        fun apply(p: Int) {
-            val iso = p.coerceIn(50, 6400)
-            tv.text = "ISO $iso"
-            controller.setIso(iso)
+    // ---------- 공용 유틸 ----------
+
+    private fun statusBarHeight(): Int {
+        val insets = ViewCompat.getRootWindowInsets(binding.root)
+        return insets?.getInsets(WindowInsetsCompat.Type.statusBars())?.top ?: 0
+    }
+
+
+    private fun dp(i: Int): Int =
+        (resources.displayMetrics.density * i + 0.5f).toInt()
+
+    private fun removeOverlayByTag(tag: String) {
+        val parent = binding.root
+        // 루트 뷰 하위에서 tag로 찾기
+        for (i in 0 until parent.childCount) {
+            val v = parent.getChildAt(i)
+            if (tag == v.tag) {
+                parent.removeView(v)
+                return
+            }
         }
-        apply(seek.progress)
-        seek.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
-            override fun onProgressChanged(sb: SeekBar?, p: Int, f: Boolean) = apply(p)
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
-            override fun onStopTrackingTouch(sb: SeekBar?) {}
-        })
-        LinearLayout(this).apply {
+    }
+
+    private fun hasOverlay(tag: String): Boolean {
+        val parent = binding.root
+        for (i in 0 until parent.childCount) {
+            if (parent.getChildAt(i).tag == tag) return true
+        }
+        return false
+    }
+
+    // 공통 오버레이 생성 헬퍼
+    @SuppressLint("SetTextI18n")
+    private fun makeOverlay(
+        tag: String,
+        titleText: String,
+        initialValueText: String,
+        onAuto: () -> Unit,
+        onClose: () -> Unit,
+        content: (container: LinearLayout, valueText: TextView) -> Unit
+    ): LinearLayout {
+        val overlay = LinearLayout(this).apply {
+            this.tag = tag
             orientation = LinearLayout.VERTICAL
-            addView(seek); addView(tv)
-            AlertDialog.Builder(this@MainActivity)
-                .setTitle("ISO")
-                .setView(this)
-                .setNegativeButton("Auto") { _, _ -> controller.setManualEnabled(false) }
-                .setPositiveButton("OK", null)
-                .show()
+            setBackgroundColor(0x99000000.toInt()) // 검은색 투명
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+
+            layoutParams = ViewGroup.MarginLayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = statusBarHeight() + dp(8)
+                marginStart = dp(8)
+                marginEnd  = dp(8)
+            }
         }
+
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            val title = TextView(this@MainActivity).apply {
+                text = titleText
+                setTextColor(0xFFFFFFFF.toInt())
+                textSize = 18f
+            }
+            addView(title)
+            addView(View(this@MainActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(0, 0, 1f)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "AUTO"
+                setTextColor(0xFFBBB3FF.toInt())
+                textSize = 14f
+                setPadding(dp(8), dp(4), dp(8), dp(4))
+                setOnClickListener { onAuto(); removeOverlayByTag(tag) }
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "닫기"
+                setTextColor(0xFFFFFFFF.toInt())
+                textSize = 14f
+                setPadding(dp(8), dp(4), dp(8), dp(4))
+                setOnClickListener { onClose(); removeOverlayByTag(tag) }
+            })
+        }
+
+        val valueText = TextView(this).apply {
+            text = initialValueText
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 15f
+            setPadding(0, dp(6), 0, dp(4))
+        }
+
+        overlay.addView(titleRow)
+        overlay.addView(valueText)
+
+        // 여기서 valueText를 콜백으로 넘겨서 내부에서 직접 갱신하게 함
+        content(overlay, valueText)
+
+        return overlay
     }
 
-    private fun showShutterQuickDialog() {
+
+    // overlay에 저장해둔 valueText 찾기 유틸
+    private fun overlayValueText(overlay: View): TextView? =
+        overlay.getTag(R.id.contentDescription) as? TextView
+
+    // ---------- ISO Overlay ----------
+    @SuppressLint("SetTextI18n")
+    private fun showIsoOverlay() {
+        val tag = "overlayIso" // 또는 TAG_ISO_PANEL
+        if (hasOverlay(tag)) { removeOverlayByTag(tag); return }
+
         controller.setManualEnabled(true)
-        val seek = SeekBar(this).apply { max = 1000; progress = 300; setPadding(24,24,24,8) }
-        val tv = TextView(this).apply { setPadding(24,0,24,16) }
 
-        fun progressToExposureNs(p: Int): Long {
-            val min = 1.25e-4; val max = 0.25
-            val t = p / 1000.0
-            val sec = min * Math.pow(max / min, t)
-            return (sec * 1e9).toLong()
+        val overlay = makeOverlay(
+            tag = tag,
+            titleText = "ISO",
+            initialValueText = "ISO 400",
+            onAuto = { controller.setManualEnabled(false) },
+            onClose = { /* no-op */ }
+        ) { container, valueText ->
+            val seek = SeekBar(this@MainActivity).apply {
+                max = 6400
+                progress = 400
+            }
+            fun apply(p: Int) {
+                val iso = p.coerceIn(50, 6400)
+                valueText.text = "ISO $iso"
+                controller.setIso(iso)
+            }
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, f: Boolean) = apply(p)
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+            container.addView(seek)
         }
-        fun label(ns: Long): String {
-            val s = ns / 1e9
-            val denom = listOf(8000,4000,2000,1000,500,250,125,60,30,15,8,4)
-            val near = denom.minBy { kotlin.math.abs(1.0/it - s) }
-            return if (s < 0.9) "1/$near s" else String.format("%.1fs", s)
-        }
-        fun apply(p: Int) {
-            val ns = progressToExposureNs(p)
-            tv.text = "Shutter ${label(ns)}"
-            controller.setExposureTimeNs(ns)
-        }
-        apply(seek.progress)
-        seek.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
-            override fun onProgressChanged(sb: SeekBar?, p: Int, f: Boolean) = apply(p)
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
-            override fun onStopTrackingTouch(sb: SeekBar?) {}
-        })
-        LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(seek); addView(tv)
-            AlertDialog.Builder(this@MainActivity)
-                .setTitle("Shutter")
-                .setView(this)
-                .setNegativeButton("Auto") { _, _ -> controller.setManualEnabled(false) }
-                .setPositiveButton("OK", null)
-                .show()
-        }
+
+        binding.root.addView(overlay)
     }
 
-    private fun showWbQuickDialog() {
-        val items = arrayOf("AUTO","INCANDESCENT","FLUORESCENT","DAYLIGHT","CLOUDY")
-        val spinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, items)
+
+    // ---------- Shutter Overlay ----------
+    @SuppressLint("SetTextI18n")
+    private fun showShutterOverlay() {
+        val tag = "overlayShutter" // 또는 TAG_SHT_PANEL
+        if (hasOverlay(tag)) { removeOverlayByTag(tag); return }
+
+        controller.setManualEnabled(true)
+
+        val overlay = makeOverlay(
+            tag = tag,
+            titleText = "Shutter Speed",
+            initialValueText = "Shutter 1/60 s",
+            onAuto = { controller.setManualEnabled(false) },
+            onClose = { /* no-op */ }
+        ) { container, valueText ->
+            val seek = SeekBar(this@MainActivity).apply {
+                max = 1000
+                progress = 300
+            }
+            fun progressToExposureNs(p: Int): Long {
+                val min = 1.25e-4   // 1/8000 s
+                val max = 0.25      // 1/4 s
+                val t = p / 1000.0
+                val sec = min * Math.pow(max / min, t)
+                return (sec * 1e9).toLong()
+            }
+            fun label(ns: Long): String {
+                val s = ns / 1e9
+                val denom = listOf(8000, 4000, 2000, 1000, 500, 250, 125, 60, 30, 15, 8, 4)
+                val near = denom.minBy { abs(1.0 / it - s) }
+                return if (s < 0.9) "1/$near s" else String.format("%.1fs", s)
+            }
+            fun apply(p: Int) {
+                val ns = progressToExposureNs(p)
+                valueText.text = "Shutter ${label(ns)}"
+                controller.setExposureTimeNs(ns)
+            }
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, f: Boolean) = apply(p)
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+            container.addView(seek)
         }
-        AlertDialog.Builder(this)
-            .setTitle("White balance")
-            .setView(spinner)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Apply") { _, _ ->
-                val mode = when (spinner.selectedItem as String) {
-                    "AUTO" -> CameraMetadata.CONTROL_AWB_MODE_AUTO
-                    "INCANDESCENT" -> CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT
-                    "FLUORESCENT" -> CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT
-                    "DAYLIGHT" -> CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT
-                    else -> CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
-                }
-                controller.setAwbMode(mode)
-            }.show()
+
+        binding.root.addView(overlay)
     }
 
+
+    // ---------- White Balance Overlay ----------
+    @SuppressLint("SetTextI18n")
+    private fun showWbOverlay() {
+        val tag = "overlayWb" // 또는 TAG_WB_PANEL
+        if (hasOverlay(tag)) { removeOverlayByTag(tag); return }
+
+        controller.setManualEnabled(true)
+
+        val overlay = makeOverlay(
+            tag = tag,
+            titleText = "White Balance (K)",
+            initialValueText = "A 4400K",
+            onAuto = { controller.setManualEnabled(false) },
+            onClose = { /* no-op */ }
+        ) { container, valueText ->
+            val seek = SeekBar(this@MainActivity).apply {
+                max = 8000
+                progress = 4400
+            }
+            fun apply(p: Int) {
+                val k = p.coerceIn(2000, 8000)
+                valueText.text = "A ${k}K"
+                controller.setAwbTemperature(k)
+            }
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, f: Boolean) = apply(p)
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+            container.addView(seek)
+        }
+
+        binding.root.addView(overlay)
+    }
+
+
+    // ---------- PERMISSIONS ----------
     private fun requestPermissionsIfNeeded() {
         val needs = mutableListOf(Manifest.permission.CAMERA)
         if (Build.VERSION.SDK_INT >= 33) needs += Manifest.permission.READ_MEDIA_IMAGES
@@ -140,6 +294,13 @@ class MainActivity : AppCompatActivity() {
         Permissions.requestIfNeeded(this, needs.toTypedArray())
     }
 
-    override fun onResume() { super.onResume(); controller.onResume() }
-    override fun onPause()  { controller.onPause(); super.onPause() }
+    override fun onResume() {
+        super.onResume()
+        controller.onResume()
+    }
+
+    override fun onPause() {
+        controller.onPause()
+        super.onPause()
+    }
 }

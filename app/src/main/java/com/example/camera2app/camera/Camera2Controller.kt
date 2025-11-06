@@ -28,6 +28,9 @@ import java.util.*
 import kotlin.math.abs
 import kotlin.math.max
 
+import android.hardware.camera2.params.RggbChannelVector
+
+
 class Camera2Controller(
     private val context: Context,
     private val textureView: TextureView,
@@ -208,7 +211,6 @@ class Camera2Controller(
         applyZoom(builder)
     }
 
-    /** 🔥 풀스크린 센터-크롭 (회전 보정 포함) */
     /** 풀스크린 센터-크롭 (회전 포함, 중심 pivot) */
     fun applyCenterCropTransform() {
         val vw = textureView.width.toFloat()
@@ -313,6 +315,20 @@ class Camera2Controller(
         imageReader?.close(); imageReader = null
     }
 
+    private fun updateRepeatingWithGains(gains: RggbChannelVector) {
+        val st = textureView.surfaceTexture ?: return
+        val previewSurface = Surface(st)
+        val req = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)?.apply {
+            addTarget(previewSurface)
+            set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_OFF)
+            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+            set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+            set(CaptureRequest.COLOR_CORRECTION_GAINS, gains)
+        } ?: return
+        session?.setRepeatingRequest(req.build(), null, bgHandler)
+    }
+
+
     fun switchCamera() {
         lensFacing = if (lensFacing == CameraCharacteristics.LENS_FACING_BACK)
             CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
@@ -322,5 +338,26 @@ class Camera2Controller(
         if (w > 0 && h > 0) openCamera(w, h)
         else textureView.surfaceTextureListener = surfaceListener
     }
+
+    fun setAwbTemperature(kelvin: Int) {
+        // Kelvin을 RGB Gain 값으로 단순 근사 변환
+        val rGain = when {
+            kelvin < 4000 -> 2.0f
+            kelvin > 7000 -> 1.0f
+            else -> 1.5f
+        }
+        val bGain = when {
+            kelvin < 4000 -> 1.0f
+            kelvin > 7000 -> 2.0f
+            else -> 1.5f
+        }
+
+        val gains = RggbChannelVector(rGain, 1.0f, 1.0f, bGain)
+        manualEnabled = true
+        currentAwbMode = CameraMetadata.CONTROL_AWB_MODE_OFF // 수동 WB로 전환
+        updateRepeatingWithGains(gains)
+    }
+
+
 
 }
