@@ -1,0 +1,15 @@
+<!-- res/values/strings.xml -->
+<resources>
+    <string name="app_name">camera2app</string>
+
+    <!-- 상단 툴바 버튼들 -->
+    <string name="iso">ISO</string>
+    <string name="white_balance">White Balance</string>
+    <string name="shutter_speed">Shutter Speed</string>
+    <string name="aspect_ratio">Aspect Ratio</string>
+
+    <!-- 하단 바 버튼들 -->
+    <string name="gallery">Gallery</string>
+    <string name="shutter">Shutter</string>
+    <string name="switch_camera">Switch Camera</string>
+</resources>

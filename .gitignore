@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android/IDE
+local.properties
+.idea/
+*.iml
+
+# Logs
+*.log
+
+# Generated
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Keystore (있다면)
+*.jks
+*.keystore
