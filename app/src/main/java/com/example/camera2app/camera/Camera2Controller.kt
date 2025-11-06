@@ -10,10 +10,12 @@ import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
+import android.hardware.camera2.params.RggbChannelVector
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Range
 import android.util.Size
@@ -28,15 +30,13 @@ import java.util.*
 import kotlin.math.abs
 import kotlin.math.max
 
-import android.hardware.camera2.params.RggbChannelVector
-
-
 class Camera2Controller(
     private val context: Context,
     private val textureView: TextureView,
     private val onFrameLevelChanged: (rollDeg: Float) -> Unit,
     private val onSaved: (Uri) -> Unit,
-    private val previewContainer: ViewGroup
+    private val previewContainer: ViewGroup,
+    private val onFpsChanged: (Double) -> Unit = {}   // ← FPS 콜백
 ) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
@@ -56,6 +56,7 @@ class Camera2Controller(
     private var expRange: Range<Int> = Range(0, 0)
     private var currentExp = 0
 
+    // 수동 제어 상태
     private var manualEnabled = false
     private var isoRange: Range<Int> = Range(100, 1600)
     private var exposureTimeRange: Range<Long> = Range(1_000_000L, 100_000_000L)
@@ -65,6 +66,11 @@ class Camera2Controller(
 
     private var lensFacing: Int = CameraCharacteristics.LENS_FACING_BACK
 
+    // FPS 계산용
+    private var fpsCounter = 0
+    private var lastFpsTickMs = 0L
+    private var fpsSmoothed = 0.0
+
     fun setManualEnabled(b: Boolean) { manualEnabled = b; updateRepeating() }
     fun setIso(v: Int) { currentIso = v.coerceIn(isoRange.lower, isoRange.upper); updateRepeating() }
     fun setExposureTimeNs(ns: Long) { currentExposureNs = ns.coerceIn(exposureTimeRange.lower, exposureTimeRange.upper); updateRepeating() }
@@ -72,14 +78,20 @@ class Camera2Controller(
     fun setExposureCompensation(value: Int) { currentExp = value.coerceIn(expRange.lower, expRange.upper); updateRepeating() }
     fun setZoom(zoomX: Float) { currentZoom = zoomX.coerceIn(1f, maxZoom()); updateRepeating() }
 
+    // Camera2Controller.kt
     fun onResume() {
         startBackground()
-        // 레이아웃 변동 시 항상 트랜스폼 재적용
+
+        // 🔥 항상 리스너 부착 (isAvailable 여부와 무관)
+        textureView.surfaceTextureListener = surfaceListener
+
         textureView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             applyCenterCropTransform()
         }
-        if (textureView.isAvailable) openCamera(textureView.width, textureView.height)
-        else textureView.surfaceTextureListener = surfaceListener
+
+        if (textureView.isAvailable) {
+            openCamera(textureView.width, textureView.height)
+        }
     }
 
     fun onPause() {
@@ -91,7 +103,20 @@ class Camera2Controller(
         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) = openCamera(w, h)
         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) = applyCenterCropTransform()
         override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
-        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
+            // 매 프레임 콜백 → FPS 계산
+            fpsCounter++
+            val now = SystemClock.elapsedRealtime()
+            if (lastFpsTickMs == 0L) lastFpsTickMs = now
+            val dt = now - lastFpsTickMs
+            if (dt >= 500) { // 0.5초마다 갱신
+                val inst = fpsCounter * 1000.0 / dt
+                fpsSmoothed = if (fpsSmoothed == 0.0) inst else 0.6 * inst + 0.4 * fpsSmoothed
+                fpsCounter = 0
+                lastFpsTickMs = now
+                onFpsChanged(fpsSmoothed)
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -103,10 +128,10 @@ class Camera2Controller(
         chars = cameraManager.getCameraCharacteristics(cameraId)
         sensorArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: Rect()
 
-        // 뷰 비율에 가장 가까운 프리뷰 사이즈 선택 (왜곡/크롭 최소화)
+        // 화면 비율에 가장 가까운 프리뷰 사이즈 선택
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
         val out = map.getOutputSizes(SurfaceTexture::class.java).toList()
-        val viewAspect = if (viewW > 0 && viewH > 0) viewW.toFloat() / viewH else 9f/16f
+        val viewAspect = if (viewW > 0 && viewH > 0) viewW.toFloat() / viewH else 9f / 16f
         previewSize = chooseByAspect(out, viewAspect)
 
         expRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0)
@@ -224,7 +249,6 @@ class Camera2Controller(
         val centerX = viewRect.centerX()
         val centerY = viewRect.centerY()
 
-        // 버퍼 크기: 90/270 회전에선 가로세로가 뒤집혀 들어옴
         val bufW: Float
         val bufH: Float
         val degrees: Float
@@ -235,18 +259,14 @@ class Camera2Controller(
             else -> { bufW = previewSize.width.toFloat();  bufH = previewSize.height.toFloat(); degrees = 0f }
         }
 
-        // 버퍼 사각형을 "화면 중앙"에 맞춰놓고, FILL(센터-크롭)로 매핑
         val bufferRect = android.graphics.RectF(0f, 0f, bufW, bufH)
         bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
 
-        // 1) 화면 → 버퍼로 FILL 매핑 (크롭되더라도 여백 없이 채우기)
         matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
 
-        // 2) 혹시 부족하면 한 번 더 스케일을 보정 (정밀 채우기)
         val scale = kotlin.math.max(vh / bufH, vw / bufW)
         matrix.postScale(scale, scale, centerX, centerY)
 
-        // 3) 회전은 항상 "화면 중심" 기준으로
         if (degrees != 0f) matrix.postRotate(degrees, centerX, centerY)
 
         textureView.setTransform(matrix)
@@ -315,6 +335,7 @@ class Camera2Controller(
         imageReader?.close(); imageReader = null
     }
 
+    /** AWB를 Kelvin 기반으로 근사 → RGGB Gains 적용 (수동 WB) */
     private fun updateRepeatingWithGains(gains: RggbChannelVector) {
         val st = textureView.surfaceTexture ?: return
         val previewSurface = Surface(st)
@@ -324,10 +345,14 @@ class Camera2Controller(
             set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
             set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
             set(CaptureRequest.COLOR_CORRECTION_GAINS, gains)
+            // 수동 노출/ISO 유지
+            set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+            set(CaptureRequest.SENSOR_SENSITIVITY, currentIso)
+            set(CaptureRequest.SENSOR_EXPOSURE_TIME, currentExposureNs)
+            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
         } ?: return
         session?.setRepeatingRequest(req.build(), null, bgHandler)
     }
-
 
     fun switchCamera() {
         lensFacing = if (lensFacing == CameraCharacteristics.LENS_FACING_BACK)
@@ -340,7 +365,7 @@ class Camera2Controller(
     }
 
     fun setAwbTemperature(kelvin: Int) {
-        // Kelvin을 RGB Gain 값으로 단순 근사 변환
+        // 단순 근사: 차갑게(고켈빈) → Blue gain↑, 따뜻하게(저켈빈) → Red gain↑
         val rGain = when {
             kelvin < 4000 -> 2.0f
             kelvin > 7000 -> 1.0f
@@ -354,10 +379,7 @@ class Camera2Controller(
 
         val gains = RggbChannelVector(rGain, 1.0f, 1.0f, bGain)
         manualEnabled = true
-        currentAwbMode = CameraMetadata.CONTROL_AWB_MODE_OFF // 수동 WB로 전환
+        currentAwbMode = CameraMetadata.CONTROL_AWB_MODE_OFF
         updateRepeatingWithGains(gains)
     }
-
-
-
 }

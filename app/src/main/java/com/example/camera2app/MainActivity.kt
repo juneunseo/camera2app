@@ -17,6 +17,13 @@ import kotlin.math.abs
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
+import android.view.Gravity
+import android.widget.FrameLayout
+import android.widget.TextView
+import android.graphics.Typeface
+import java.util.Locale
+
+
 
 class MainActivity : AppCompatActivity() {
 
@@ -33,17 +40,40 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // 1) 왼쪽 상단 FPS 라벨 추가 (반투명 검정 바탕)
+        val fpsText = TextView(this).apply {
+            text = "— FPS"
+            setPadding(12, 8, 12, 8)
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0x66000000.toInt())
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+        }
+        val lp = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.START
+        ).apply { setMargins(12, 12, 12, 12) }
+        binding.previewContainer.addView(fpsText, lp)
+
+        // 2) 컨트롤러 생성 시 FPS 콜백 연결
         controller = Camera2Controller(
             context = this,
             textureView = binding.textureView,
             onFrameLevelChanged = { _ -> },   // (그리드 제거)
             onSaved = { /* 필요 시 썸네일 처리 */ },
-            previewContainer = binding.previewContainer
+            previewContainer = binding.previewContainer,
+            onFpsChanged = { fps ->
+                runOnUiThread {
+                    fpsText.text = String.format(Locale.US, "%.1f FPS", fps)
+                }
+            }
         )
 
         setupUi()
         requestPermissionsIfNeeded()
     }
+
 
     private fun setupUi() {
         binding.btnShutter.setOnClickListener { controller.takePicture() }
