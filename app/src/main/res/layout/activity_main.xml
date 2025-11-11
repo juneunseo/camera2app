@@ -114,4 +114,13 @@
         android:textSize="12sp"
         android:background="#66000000" />
 
+    <View
+        android:id="@+id/shutterFlashView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FFFFFF"
+        android:alpha="0"
+        android:clickable="false"/>
+
+
 </FrameLayout>

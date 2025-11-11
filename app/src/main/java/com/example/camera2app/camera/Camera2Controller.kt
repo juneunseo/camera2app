@@ -33,6 +33,10 @@ import kotlin.math.max
 
 import android.hardware.camera2.params.StreamConfigurationMap
 
+import android.view.View
+import com.example.camera2app.R
+
+
 
 
 class Camera2Controller(
@@ -47,7 +51,7 @@ class Camera2Controller(
 
     private var cameraDevice: CameraDevice? = null
     private var session: CameraCaptureSession? = null
-    private var previewSize: Size = Size(1280, 720)
+    private var previewSize: Size = Size(1920, 1080)
     private var imageReader: android.media.ImageReader? = null
 
     private var bgThread: HandlerThread? = null
@@ -80,6 +84,8 @@ class Camera2Controller(
     private val TARGET_FPS = 120
     private val FRAME_NS_120 = 1_000_000_000L / TARGET_FPS  // 8_333_333ns
     private var forceManual120 = true   // 플랜 A 사용
+
+    private var shutterOverlay: View? = null
 
     // ----- 외부 제어 API -----
     fun setManualEnabled(b: Boolean) { manualEnabled = b; updateRepeating() }
@@ -114,6 +120,36 @@ class Camera2Controller(
         closeSession()
         stopBackground()
     }
+
+    private fun playShutterFlash() {
+        if (shutterOverlay == null) {
+            // ✅ 루트에서 찾기
+            shutterOverlay = previewContainer.rootView.findViewById(R.id.shutterFlashView)
+            // ✅ 항상 맨 위로
+            shutterOverlay?.bringToFront()
+        }
+        val v = shutterOverlay ?: return
+
+        v.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        v.animate().cancel()
+
+        // (가시성 안전장치 – 원래 기본이 VISIBLE이지만 혹시 모를 경우 대비)
+        v.visibility = View.VISIBLE
+
+        v.alpha = 0f
+        v.animate()
+            .alpha(0.85f) //최대 밝기
+            .setDuration(40) //속도 조절
+            .withEndAction {
+                v.animate()
+                    .alpha(0f)
+                    .setDuration(180)
+                    .withEndAction { v.setLayerType(View.LAYER_TYPE_NONE, null) }
+                    .start()
+            }
+            .start()
+    }
+
 
     private val surfaceListener = object : TextureView.SurfaceTextureListener {
         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) = openCamera(w, h)
@@ -299,6 +335,8 @@ class Camera2Controller(
     }
 
     fun takePicture() {
+        textureView.post { playShutterFlash() }
+
         val jpegSurface = imageReader?.surface ?: return
         val rotation = textureView.display?.rotation ?: Surface.ROTATION_0
 
@@ -520,4 +558,7 @@ class Camera2Controller(
         val sizes = map.getOutputSizes(SurfaceTexture::class.java)
         sizes?.forEach { sz -> Log.i("CAM", "Preview size supported: ${sz.width}x${sz.height}") }
     }
+
+
+
 }
