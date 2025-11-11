@@ -1,24 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    tools:context=".MainActivity">
+    android:layout_height="match_parent">
 
-    <!-- 프리뷰 컨테이너: 카메라 화면 전체를 덮는 부분 -->
+    <!-- 프리뷰 컨테이너 -->
     <FrameLayout
         android:id="@+id/previewContainer"
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
-        <!-- Camera2 프리뷰가 표시될 TextureView -->
         <TextureView
             android:id="@+id/textureView"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
     </FrameLayout>
 
-    <!-- 상단 바: 우측에 ISO / WB / ShutterSpeed -->
+    <!-- 상단 바 -->
     <LinearLayout
         android:id="@+id/topBar"
         android:layout_width="match_parent"
@@ -30,13 +27,11 @@
         android:paddingStart="12dp"
         android:paddingEnd="12dp">
 
-        <!-- 왼쪽 공간 확보용 -->
         <View
             android:layout_width="0dp"
             android:layout_height="1dp"
             android:layout_weight="1" />
 
-        <!-- ISO 버튼 -->
         <ImageButton
             android:id="@+id/btnIso"
             android:layout_width="40dp"
@@ -45,7 +40,6 @@
             android:background="@android:color/transparent"
             android:src="@drawable/ic_iso" />
 
-        <!-- White Balance 버튼 -->
         <ImageButton
             android:id="@+id/btnWb"
             android:layout_width="40dp"
@@ -54,7 +48,6 @@
             android:background="@android:color/transparent"
             android:src="@drawable/ic_white_balance" />
 
-        <!-- Shutter Speed 버튼 -->
         <ImageButton
             android:id="@+id/btnSec"
             android:layout_width="40dp"
@@ -64,7 +57,7 @@
             android:src="@drawable/ic_shutter_speed" />
     </LinearLayout>
 
-    <!-- 하단 바: 셔터 / 갤러리 / 카메라 전환 -->
+    <!-- 하단 바 -->
     <LinearLayout
         android:id="@+id/bottomBar"
         android:layout_width="match_parent"
@@ -75,7 +68,6 @@
         android:background="#D9000000"
         android:paddingHorizontal="24dp">
 
-        <!-- 갤러리 버튼 -->
         <ImageButton
             android:id="@+id/btnGallery"
             android:layout_width="48dp"
@@ -88,7 +80,6 @@
             android:layout_height="1dp"
             android:layout_weight="1" />
 
-        <!-- 셔터 버튼 -->
         <ImageButton
             android:id="@+id/btnShutter"
             android:layout_width="84dp"
@@ -101,7 +92,6 @@
             android:layout_height="1dp"
             android:layout_weight="1" />
 
-        <!-- 카메라 전환 버튼 -->
         <ImageButton
             android:id="@+id/btnSwitch"
             android:layout_width="48dp"
@@ -110,7 +100,7 @@
             android:src="@drawable/ic_switch_camera" />
     </LinearLayout>
 
-    <!-- FPS 표시: 좌측 상단, 투명 검정 배경 -->
+    <!-- 앱 FPS 라벨 (좌상단) -->
     <TextView
         android:id="@+id/fpsText"
         android:layout_width="wrap_content"

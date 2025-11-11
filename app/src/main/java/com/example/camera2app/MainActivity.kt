@@ -31,7 +31,7 @@ class MainActivity : AppCompatActivity() {
     // 오버레이 태그
     private val TAG_ISO = "overlayIso"
     private val TAG_SHT = "overlayShutter"
-    private val TAG_WB  = "overlayWb"
+    private val TAG_WB = "overlayWb"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,19 +39,19 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         // ── FPS 라벨 (좌측 상단, 반투명 배경)
-        val fpsText = TextView(this).apply {
-            text = "0.0 FPS"
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0x66000000) // 반투명 검정
-            textSize = 12f
-        }
+//        val fpsText = TextView(this).apply {
+//            text = "0.0 FPS"
+//            setPadding(dp(10), dp(6), dp(10), dp(6))
+//            setTextColor(0xFFFFFFFF.toInt())
+//            setBackgroundColor(0x66000000) // 반투명 검정
+//            textSize = 12f
+//        }
         val fpsLp = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.START
         ).apply { setMargins(dp(12), dp(12), dp(12), dp(12)) }
-        binding.previewContainer.addView(fpsText, fpsLp)
+//        binding.previewContainer.addView(fpsText, fpsLp)
 
         // 상태바 인셋 반영(상단바/ FPS 둘 다)
         ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
@@ -59,9 +59,9 @@ class MainActivity : AppCompatActivity() {
             binding.topBar.updateLayoutParams<ViewGroup.MarginLayoutParams> {
                 topMargin = topInset
             }
-            fpsText.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                topMargin = topInset + dp(8)
-            }
+//            fpsText.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+//                topMargin = topInset + dp(8)
+//            }
             insets
         }
 
@@ -103,7 +103,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnIso.setOnClickListener { showIsoOverlay() }
         binding.btnSec.setOnClickListener { showShutterOverlay() }
-        binding.btnWb.setOnClickListener  { showWbOverlay() }
+        binding.btnWb.setOnClickListener { showWbOverlay() }
     }
 
     // ───────────────── 공용 유틸 ─────────────────
@@ -160,7 +160,7 @@ class MainActivity : AppCompatActivity() {
             ).apply {
                 topMargin = statusBarHeight() + dp(8)
                 marginStart = dp(8)
-                marginEnd  = dp(8)
+                marginEnd = dp(8)
             }
         }
 
@@ -231,6 +231,7 @@ class MainActivity : AppCompatActivity() {
                 max = 6400
                 progress = 400
             }
+
             fun apply(p: Int) {
                 val iso = p.coerceIn(50, 6400)
                 valueText.text = "ISO $iso"
@@ -265,6 +266,7 @@ class MainActivity : AppCompatActivity() {
                 max = 1000
                 progress = 300
             }
+
             fun progressToExposureNs(p: Int): Long {
                 val min = 1.25e-4
                 val max = 0.25
@@ -272,12 +274,14 @@ class MainActivity : AppCompatActivity() {
                 val sec = min * Math.pow(max / min, t)
                 return (sec * 1e9).toLong()
             }
+
             fun label(ns: Long): String {
                 val s = ns / 1e9
                 val denom = listOf(8000, 4000, 2000, 1000, 500, 250, 125, 60, 30, 15, 8, 4)
                 val near = denom.minBy { abs(1.0 / it - s) }
                 return if (s < 0.9) "1/$near s" else String.format(Locale.US, "%.1fs", s)
             }
+
             fun apply(p: Int) {
                 val ns = progressToExposureNs(p)
                 valueText.text = "Shutter ${label(ns)}"
@@ -312,6 +316,7 @@ class MainActivity : AppCompatActivity() {
                 max = 8000
                 progress = 4400
             }
+
             fun apply(p: Int) {
                 val k = p.coerceIn(2000, 8000)
                 valueText.text = "A ${k}K"
