@@ -79,6 +79,20 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         )
+
+        // controller 생성 끝난 직후에 추가
+        binding.btnAspect.setOnClickListener {
+            val mode = controller.cycleAspectMode()
+            val label = when (mode) {
+                Camera2Controller.AspectMode.FULL       -> "Full"
+                Camera2Controller.AspectMode.RATIO_1_1  -> "1:1"
+                Camera2Controller.AspectMode.RATIO_3_4  -> "3:4"
+                Camera2Controller.AspectMode.RATIO_9_16 -> "9:16"
+            }
+            android.widget.Toast.makeText(this, "Aspect: $label", android.widget.Toast.LENGTH_SHORT).show()
+        }
+
+
         // 상태바 인셋 적용: topBar + fpsText 모두 내려주기
         ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
             val topInset = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top

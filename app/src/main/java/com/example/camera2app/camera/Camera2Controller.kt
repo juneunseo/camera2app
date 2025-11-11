@@ -1,581 +1,595 @@
 package com.example.camera2app.camera
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Context
-import android.content.pm.PackageManager
 import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.graphics.Rect
-import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.hardware.camera2.params.RggbChannelVector
+import android.hardware.camera2.params.StreamConfigurationMap
 import android.net.Uri
-import android.os.Build
-import android.os.Handler
-import android.os.HandlerThread
-import android.os.SystemClock
+import android.os.*
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
-import android.view.View
-import android.view.ViewGroup
+import android.widget.FrameLayout
 import androidx.core.content.ContextCompat
-import com.example.camera2app.R
-import com.example.camera2app.camera.OrientationUtil.getJpegOrientation
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
+import kotlin.math.ln
 import kotlin.math.abs
 import kotlin.math.max
-import android.hardware.camera2.params.StreamConfigurationMap
+import kotlin.math.min
+import kotlin.math.pow
+import android.graphics.SurfaceTexture
+
 
 class Camera2Controller(
     private val context: Context,
     private val textureView: TextureView,
     private val onFrameLevelChanged: (rollDeg: Float) -> Unit,
     private val onSaved: (Uri) -> Unit,
-    private val previewContainer: ViewGroup,
-    private val onFpsChanged: (Double) -> Unit = {}
+    private val previewContainer: FrameLayout,
+    private val onFpsChanged: (Double) -> Unit
 ) {
-    private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+    // ------------------------- Aspect -------------------------
+    enum class AspectMode { FULL, RATIO_1_1, RATIO_3_4, RATIO_9_16 }
+    private var aspectMode: AspectMode = AspectMode.FULL
+
+    // ------------------------- Camera2 core --------------------
+    private val cameraManager by lazy {
+        context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    }
+    private var cameraId: String = ""
+    private var isFront: Boolean = false
 
     private var cameraDevice: CameraDevice? = null
-    private var session: CameraCaptureSession? = null
-    private var previewSize: Size = Size(1920, 1080)
-    private var imageReader: android.media.ImageReader? = null
+    private var cameraCaptureSession: CameraCaptureSession? = null
 
-    private var bgThread: HandlerThread? = null
-    private var bgHandler: Handler? = null
+    private var previewRequestBuilder: CaptureRequest.Builder? = null
+    private var previewRequest: CaptureRequest? = null
 
-    private lateinit var cameraId: String
-    private lateinit var chars: CameraCharacteristics
-    private lateinit var sensorArray: Rect
+    private var characteristics: CameraCharacteristics? = null
+    private var sensorActiveArray: Rect? = null
 
-    private var currentZoom = 1.0f
-    private var expRange: Range<Int> = Range(0, 0)
-    private var currentExp = 0
+    private var previewSize: Size = Size(1280, 720)
+    private lateinit var previewSurface: Surface
 
-    // ===== 수동 제어 상태 =====
-    private var manualEnabled = true
-    private var isoRange: Range<Int> = Range(100, 1600)
-    private var exposureTimeRange: Range<Long> = Range(1_000_000L, 100_000_000L)
-    private var currentIso = 200
-    private var currentExposureNs = 3_000_000L     // 3ms
-    private var currentAwbMode = CameraMetadata.CONTROL_AWB_MODE_AUTO
+    private var jpegReader: android.media.ImageReader? = null
 
-    private var lensFacing: Int = CameraCharacteristics.LENS_FACING_BACK
+    private val cameraOpenCloseLock = Semaphore(1)
 
-    // ===== FPS 계산 =====
-    private var fpsCounter = 0
-    private var lastFpsTickMs = 0L
-    private var fpsSmoothed = 0.0
+    // ------------------------- Threads -------------------------
+    private var backgroundThread: HandlerThread? = null
+    private var backgroundHandler: Handler? = null
 
-    // ===== 타겟 FPS / 프레임 제한 =====
-    private var targetFps = 60                     // 60 혹은 120
-    private val exposureMarginNs = 300_000L        // 0.3ms 마진
-    private val frameNs: Long get() = 1_000_000_000L / targetFps
+    // ------------------------- Manual controls -----------------
+    private var manualEnabled = false
+    private var manualIso: Int? = null
+    private var manualExposureNs: Long? = null
+    private var manualWbKelvin: Int? = null
 
-    // ===== 셔터 플래시 =====
-    private var shutterOverlay: View? = null
+    // ------------------------- FPS -----------------------------
+    private var lastFrameTsNs: Long = 0L
+    private var fpsEMA: Double = 0.0 // Exponential moving average
 
-    // ===== 해상도 제어 =====
-    private var adaptiveResolutionEnabled = false  // ✅ FHD 고정: false
-    private var fillPreview = true                 // true=CENTER_CROP, false=FIT(레터박스)
-    private lateinit var sizeLadder: List<Size>
-    private var sizeIndex = 0
-    private var lastAdaptMs = 0L
-
-    // ===== FHD 캡 =====
-    private val MAX_W = 1920
-    private val MAX_H = 1080
-    private fun isAtMostFhd(sz: Size): Boolean {
-        val w = max(sz.width, sz.height)
-        val h = minOf(sz.width, sz.height)
-        return (w <= MAX_W && h <= MAX_H)
+    // ------------------------- Public APIs ---------------------
+    fun cycleAspectMode(): AspectMode {
+        aspectMode = when (aspectMode) {
+            AspectMode.FULL      -> AspectMode.RATIO_1_1
+            AspectMode.RATIO_1_1 -> AspectMode.RATIO_3_4
+            AspectMode.RATIO_3_4 -> AspectMode.RATIO_9_16
+            AspectMode.RATIO_9_16-> AspectMode.FULL
+        }
+        applyAspectMode()
+        return aspectMode
     }
 
-    // ----- 외부 제어 API -----
-    fun setManualEnabled(b: Boolean) { manualEnabled = b; updateRepeating() }
-    fun setTargetFps(fps: Int) {
-        targetFps = if (fps <= 60) 60 else 120
-        currentExposureNs = currentExposureNs
-            .coerceIn(exposureTimeRange.lower, exposureTimeRange.upper)
-            .coerceAtMost(frameNs - exposureMarginNs)
+    fun setManualEnabled(enabled: Boolean) {
+        manualEnabled = enabled
+        apply3AandManual()
+        // 미리보기 즉시 반영
         updateRepeating()
     }
-    fun setIso(v: Int) { currentIso = v.coerceIn(isoRange.lower, isoRange.upper); updateRepeating() }
+
+    fun setIso(iso: Int) {
+        manualIso = iso
+        if (manualEnabled) {
+            previewRequestBuilder?.set(CaptureRequest.SENSOR_SENSITIVITY, iso)
+            updateRepeating()
+        }
+    }
+
     fun setExposureTimeNs(ns: Long) {
-        val cappedByFps = ns.coerceAtMost(frameNs - exposureMarginNs)
-        currentExposureNs = cappedByFps.coerceIn(exposureTimeRange.lower, exposureTimeRange.upper)
-        updateRepeating()
-    }
-    fun setAwbMode(mode: Int) { currentAwbMode = mode; updateRepeating() }
-    fun setExposureCompensation(value: Int) { currentExp = value.coerceIn(expRange.lower, expRange.upper); updateRepeating() }
-    fun setZoom(zoomX: Float) { currentZoom = zoomX.coerceIn(1f, maxZoom()); updateRepeating() }
-    fun setMinIsoFloor(minIso: Int) {
-        isoRange = Range(max(minIso, isoRange.lower), isoRange.upper)
-        currentIso = currentIso.coerceIn(isoRange.lower, isoRange.upper)
-        updateRepeating()
-    }
-    fun setFillPreview(enableCropFill: Boolean) { fillPreview = enableCropFill; applyCenterCropTransform() }
-    fun setAdaptiveResolutionEnabled(enabled: Boolean) { adaptiveResolutionEnabled = enabled }
-
-    // ----- Lifecycle -----
-    fun onResume() {
-        startBackground()
-        textureView.surfaceTextureListener = surfaceListener
-        textureView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyCenterCropTransform() }
-        if (textureView.isAvailable) openCamera(textureView.width, textureView.height)
-    }
-    fun onPause() {
-        fpsCounter = 0; lastFpsTickMs = 0L; fpsSmoothed = 0.0
-        closeSession()
-        stopBackground()
-    }
-
-    // 카메라 전후면 전환
-    fun switchCamera() {
-        lensFacing = if (lensFacing == CameraCharacteristics.LENS_FACING_BACK)
-            CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
-
-        // 세션/디바이스 정리
-        closeSession()
-
-        // 줌 초기화(이전 CROP 잔존 방지)
-        currentZoom = 1f
-
-        // 화면 크기 기준으로 다시 오픈
-        val w = textureView.width
-        val h = textureView.height
-        if (w > 0 && h > 0) {
-            openCamera(w, h)
-        } else {
-            // 아직 TextureView가 준비 안 됐으면 리스너로 대기
-            textureView.surfaceTextureListener = surfaceListener
+        manualExposureNs = ns
+        if (manualEnabled) {
+            previewRequestBuilder?.set(CaptureRequest.SENSOR_EXPOSURE_TIME, ns)
+            updateRepeating()
         }
     }
 
-    // 간이 켈빈 → RGGB 게인 변환(수동 WB)
     fun setAwbTemperature(kelvin: Int) {
-        // 대략적인 근사: 낮은 K -> R↑ / 높은 K -> B↑
-        val rGain = when {
-            kelvin < 3500 -> 2.2f
-            kelvin < 4500 -> 1.8f
-            kelvin < 5500 -> 1.5f
-            kelvin < 6500 -> 1.3f
-            else          -> 1.1f
-        }
-        val bGain = when {
-            kelvin < 3500 -> 1.1f
-            kelvin < 4500 -> 1.3f
-            kelvin < 5500 -> 1.5f
-            kelvin < 6500 -> 1.8f
-            else          -> 2.2f
-        }
-
-        val gains = RggbChannelVector(rGain, 1.0f, 1.0f, bGain)
-
-        // 수동 WB로 전환 + 수동 노출 유지
-        manualEnabled = true
-        currentAwbMode = CameraMetadata.CONTROL_AWB_MODE_OFF
-
-        // 이미 클래스에 있는 함수: 수동 WB 게인으로 프리뷰 반복요청 갱신
-        updateRepeatingWithGains(gains)
-    }
-
-    // ----- 셔터 플래시 -----
-    private fun playShutterFlash() {
-        if (shutterOverlay == null) {
-            shutterOverlay = previewContainer.rootView.findViewById(R.id.shutterFlashView)
-            shutterOverlay?.bringToFront()
-        }
-        val v = shutterOverlay ?: return
-        v.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-        v.animate().cancel()
-        v.visibility = View.VISIBLE
-        v.alpha = 0f
-        v.animate()
-            .alpha(0.85f)
-            .setDuration(40)
-            .withEndAction {
-                v.animate()
-                    .alpha(0f)
-                    .setDuration(180)
-                    .withEndAction { v.setLayerType(View.LAYER_TYPE_NONE, null) }
-                    .start()
-            }
-            .start()
-    }
-
-    // ----- FPS 측정 -----
-    private val surfaceListener = object : TextureView.SurfaceTextureListener {
-        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) = openCamera(w, h)
-        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) = applyCenterCropTransform()
-        override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
-        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
-            fpsCounter++
-            val now = SystemClock.elapsedRealtime()
-            if (lastFpsTickMs == 0L) lastFpsTickMs = now
-            val dt = now - lastFpsTickMs
-            if (dt >= 500) {
-                val inst = fpsCounter * 1000.0 / dt
-                fpsSmoothed = if (fpsSmoothed == 0.0) inst else 0.6 * inst + 0.4 * fpsSmoothed
-                fpsCounter = 0
-                lastFpsTickMs = now
-                onFpsChanged(fpsSmoothed)
-                maybeAdaptResolutionForFps()
-            }
+        manualWbKelvin = kelvin
+        if (manualEnabled) {
+            previewRequestBuilder?.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+            previewRequestBuilder?.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+            previewRequestBuilder?.set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinToGains(kelvin))
+            updateRepeating()
         }
     }
 
-    // ----- 카메라 열기 -----
-    @SuppressLint("MissingPermission")
-    private fun openCamera(viewW: Int, viewH: Int) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED) return
-
-        cameraId = findCameraIdFor(lensFacing)
-        chars = cameraManager.getCameraCharacteristics(cameraId)
-        sensorArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: Rect()
-
-        dumpFpsAndSizes()
-
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
-        val viewAspect = if (viewW > 0 && viewH > 0) viewW.toFloat() / viewH else 9f / 16f
-
-        // 해상도 사다리 구성(FHD 제한 + FHD 우선)
-        buildSizeLadder(map, viewAspect)
-        previewSize = sizeLadder.firstOrNull() ?: chooseBestPreviewSize(map, viewAspect)
-
-        // 범위/기본값
-        expRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0)
-        currentExp = currentExp.coerceIn(expRange.lower, expRange.upper)
-        isoRange = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: isoRange
-        exposureTimeRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) ?: exposureTimeRange
-        currentIso = currentIso.coerceIn(isoRange.lower, isoRange.upper)
-
-        // FPS 지키도록 노출 상한
-        currentExposureNs = currentExposureNs
-            .coerceIn(exposureTimeRange.lower, exposureTimeRange.upper)
-            .coerceAtMost(frameNs - exposureMarginNs)
-
-        // ✅ 줌 초기화(줌 잔존 방지)
-        currentZoom = 1f
-
-        cameraManager.openCamera(cameraId, deviceCallback, bgHandler)
+    fun switchCamera() {
+        isFront = !isFront
+        closeCamera()
+        openCamera()
     }
 
-    /** FHD 이하 우선으로 화면 비율(±3%) → 16:9 → 최인접 */
-    private fun chooseBestPreviewSize(map: StreamConfigurationMap, viewAspect: Float): Size {
-        val all = map.getOutputSizes(SurfaceTexture::class.java)?.toList().orEmpty()
-            .filter { it.width > 0 && it.height > 0 }
-        val sizes = all.filter { isAtMostFhd(it) }.ifEmpty { all }
-
-        val tol = 0.03f
-        val nearScreen = sizes.filter { abs(it.width / it.height.toFloat() - viewAspect) <= tol }
-        if (nearScreen.isNotEmpty()) return nearScreen.maxBy { it.width * it.height }
-
-        val near169 = sizes.filter { abs(it.width / it.height.toFloat() - 16f / 9f) <= tol }
-        if (near169.isNotEmpty()) return near169.maxBy { it.width * it.height }
-
-        return sizes.minBy { abs(it.width / it.height.toFloat() - viewAspect) }
-    }
-
-    private fun findCameraIdFor(facing: Int): String {
-        cameraManager.cameraIdList.forEach { id ->
-            val c = cameraManager.getCameraCharacteristics(id)
-            if (c.get(CameraCharacteristics.LENS_FACING) == facing) return id
+    fun onResume() {
+        startBackgroundThread()
+        if (textureView.isAvailable) {
+            openCamera()
+        } else {
+            textureView.surfaceTextureListener = surfaceTextureListener
         }
-        return cameraManager.cameraIdList.first()
     }
 
-    private val deviceCallback = object : CameraDevice.StateCallback() {
-        override fun onOpened(device: CameraDevice) {
-            cameraDevice = device
-
-            // JPEG 리더 (previewSize 기반 → FHD 제한 적용)
-            imageReader?.close()
-            imageReader = android.media.ImageReader.newInstance(
-                previewSize.width, previewSize.height, ImageFormat.JPEG, 2
-            ).apply {
-                setOnImageAvailableListener({ r ->
-                    val img = r.acquireNextImage() ?: return@setOnImageAvailableListener
-                    val buf: ByteBuffer = img.planes[0].buffer
-                    val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
-                    img.close()
-                    onSaved(saveJpeg(bytes))
-                }, bgHandler)
-            }
-
-            startPreviewNormal()
-        }
-        override fun onDisconnected(device: CameraDevice) { device.close(); cameraDevice = null }
-        override fun onError(device: CameraDevice, error: Int) { device.close(); cameraDevice = null }
-    }
-
-    /** 일반 프리뷰(수동 유지) */
-    private fun startPreviewNormal() {
-        val st = textureView.surfaceTexture ?: return
-        st.setDefaultBufferSize(previewSize.width, previewSize.height)
-        val previewSurface = Surface(st)
-        val jpegSurface = imageReader!!.surface
-
-        cameraDevice?.createCaptureSession(listOf(previewSurface, jpegSurface),
-            object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(s: CameraCaptureSession) {
-                    session = s
-                    val req = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                        addTarget(previewSurface)
-                        applyCommonControls(this, preview = true)
-                        applyColorAuto(this)
-                    }
-                    s.setRepeatingRequest(req.build(), null, bgHandler)
-                    textureView.post { applyCenterCropTransform() }
-                }
-                override fun onConfigureFailed(s: CameraCaptureSession) {}
-            }, bgHandler)
+    fun onPause() {
+        closeCamera()
+        stopBackgroundThread()
     }
 
     fun takePicture() {
-        textureView.post { playShutterFlash() }
+        val device = cameraDevice ?: return
+        val session = cameraCaptureSession ?: return
+        val active = sensorActiveArray ?: return
 
-        val jpegSurface = imageReader?.surface ?: return
-        val rotation = textureView.display?.rotation ?: Surface.ROTATION_0
+        val reader = jpegReader ?: return
+        val stillBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+            addTarget(reader.surface)
 
-        val req = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-            addTarget(jpegSurface)
-            set(CaptureRequest.JPEG_ORIENTATION, getJpegOrientation(chars, rotation))
+            // 미리보기와 동일한 SCALER_CROP_REGION
+            val crop = currentCrop(active)
+            set(CaptureRequest.SCALER_CROP_REGION, crop)
 
-            // 스틸만 화질 우선
-            applyCommonControls(this, preview = false)
-            applyColorAuto(this)
-            set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
-            set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
-            set(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_HIGH_QUALITY)
+            // 플래시/AF/AE/WB/Manual 반영
+            copy3AFromPreview(this)
+
+            // JPEG 방향
+            val rotation = (context.resources.configuration.orientation)
+            set(CaptureRequest.JPEG_ORIENTATION, OrientationUtil.getJpegOrientation(characteristics, rotation))
         }
-        session?.capture(req.build(), null, bgHandler)
-    }
 
-    private fun applyColorAuto(builder: CaptureRequest.Builder) {
-        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        builder.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
-        builder.set(CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
-        builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-        builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_FAST)
-    }
-
-    /** 수동 유지 + FPS 보장 + 줌 리셋 로직 반영 */
-    private fun applyCommonControls(builder: CaptureRequest.Builder, preview: Boolean) {
-        if (manualEnabled) {
-            builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_OFF)
-            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
-
-            builder.set(CaptureRequest.SENSOR_FRAME_DURATION, frameNs)
-            val safeExp = currentExposureNs.coerceAtMost(frameNs - exposureMarginNs)
-            builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, safeExp)
-            builder.set(CaptureRequest.SENSOR_SENSITIVITY, currentIso.coerceIn(isoRange.lower, isoRange.upper))
-            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(targetFps, targetFps))
-
-            builder.set(CaptureRequest.CONTROL_AWB_MODE, currentAwbMode)
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-
-            if (preview) {
-                builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
-                builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
-                builder.set(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_FAST)
+        // 캡처 수행
+        session.stopRepeating()
+        session.capture(stillBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                // 캡처 후 미리보기 재개
+                updateRepeating()
             }
-            builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ)
-        } else {
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-            builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-            builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentExp)
-            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(targetFps, targetFps))
-            builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ)
-        }
-        applyZoom(builder) // ✅ 항상 마지막에 적용
+        }, backgroundHandler)
     }
 
-    /** 화면 가득(CROP) 또는 FIT(레터박스) */
-    fun applyCenterCropTransform() {
-        val vw = textureView.width.toFloat()
-        val vh = textureView.height.toFloat()
-        if (vw <= 0f || vh <= 0f || previewSize.width <= 0 || previewSize.height <= 0) return
+    // ------------------------- Open / Session ------------------
 
-        val rotation = textureView.display?.rotation ?: Surface.ROTATION_0
-        val bufW = if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270)
-            previewSize.height.toFloat() else previewSize.width.toFloat()
-        val bufH = if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270)
-            previewSize.width.toFloat() else previewSize.height.toFloat()
+    @SuppressLint("MissingPermission")
+    private fun openCamera() {
+        chooseCameraId()
+        characteristics = cameraManager.getCameraCharacteristics(cameraId)
+        sensorActiveArray = characteristics?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
 
-        val viewRect = android.graphics.RectF(0f, 0f, vw, vh)
-        val bufferRect = android.graphics.RectF(0f, 0f, bufW, bufH)
-        val cx = viewRect.centerX()
-        val cy = viewRect.centerY()
-        bufferRect.offset(cx - bufferRect.centerX(), cy - bufferRect.centerY())
+        val map = characteristics?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: throw IllegalStateException("No StreamConfigurationMap")
 
-        val matrix = Matrix()
-        matrix.setRectToRect(bufferRect, viewRect, Matrix.ScaleToFit.CENTER)
+        previewSize = choosePreviewSize(map, textureView.width, textureView.height)
 
-        val scale = if (fillPreview) max(vh / bufH, vw / bufW) else minOf(vh / bufH, vw / bufW)
-        matrix.postScale(scale, scale, cx, cy)
-
-        when (rotation) {
-            Surface.ROTATION_90  -> matrix.postRotate(90f, cx, cy)
-            Surface.ROTATION_180 -> matrix.postRotate(180f, cx, cy)
-            Surface.ROTATION_270 -> matrix.postRotate(270f, cx, cy)
+        if (!cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
+            throw RuntimeException("Time out waiting to lock camera opening.")
         }
-        textureView.setTransform(matrix)
+        cameraManager.openCamera(cameraId, stateCallback, backgroundHandler)
+    }
+
+    private fun closeCamera() {
+        try {
+            cameraOpenCloseLock.acquire()
+            cameraCaptureSession?.close()
+            cameraCaptureSession = null
+            cameraDevice?.close()
+            cameraDevice = null
+            jpegReader?.close()
+            jpegReader = null
+        } catch (_: InterruptedException) {
+        } finally {
+            cameraOpenCloseLock.release()
+        }
+    }
+
+    private fun createCameraSession(device: CameraDevice) {
+        val texture = textureView.surfaceTexture ?: return
+        texture.setDefaultBufferSize(previewSize.width, previewSize.height)
+        previewSurface = Surface(texture)
+
+        // JPEG 리더 준비(최대 해상도 또는 미리보기 크기)
+        val jpegSize = chooseJpegSize(
+            characteristics?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        )
+        jpegReader = android.media.ImageReader.newInstance(
+            jpegSize.width, jpegSize.height, ImageFormat.JPEG, /*maxImages*/2
+        ).apply {
+            setOnImageAvailableListener(onJpegAvailableListener, backgroundHandler)
+        }
+
+        previewRequestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            addTarget(previewSurface)
+            // 초기 3A
+            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, bestFpsRange(characteristics))
+        }
+
+        device.createCaptureSession(
+            listOf(previewSurface, jpegReader!!.surface),
+            object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(session: CameraCaptureSession) {
+                    cameraCaptureSession = session
+                    // 현재 AspectMode 적용
+                    applyAspectMode()
+                    // 현재 3A/Manual 적용
+                    apply3AandManual()
+                    // 미리보기 시작
+                    updateRepeating()
+                }
+
+                override fun onConfigureFailed(session: CameraCaptureSession) {
+                    Log.e(TAG, "onConfigureFailed")
+                }
+            },
+            backgroundHandler
+        )
     }
 
     private fun updateRepeating() {
-        val st = textureView.surfaceTexture ?: return
-        val previewSurface = Surface(st)
-        val req = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)?.apply {
-            addTarget(previewSurface)
-            applyCommonControls(this, preview = true)
-            applyColorAuto(this)
-        } ?: return
-        session?.setRepeatingRequest(req.build(), null, bgHandler)
-        textureView.post { applyCenterCropTransform() }
+        val session = cameraCaptureSession ?: return
+        val builder = previewRequestBuilder ?: return
+        previewRequest = builder.build()
+        session.setRepeatingRequest(previewRequest!!, captureCallback, backgroundHandler)
+        // TextureView 변환 행렬도 최신 상태로
+        val active = sensorActiveArray ?: return
+        updatePreviewViewportRect(currentCrop(active))
     }
 
-    private fun maxZoom(): Float {
-        val maxZoom = chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
-        return max(1f, maxZoom)
+    // ------------------------- Aspect 적용 ---------------------
+
+    private fun applyAspectMode() {
+        val builder = previewRequestBuilder ?: return
+        val active = sensorActiveArray ?: return
+        builder.set(CaptureRequest.SCALER_CROP_REGION, currentCrop(active))
+        // 곧바로 반복요청 갱신
+        updateRepeating()
     }
 
-    /** ✅ 1×에서 센서 전체로 크롭 리셋 */
-    private fun applyZoom(builder: CaptureRequest.Builder) {
-        if (currentZoom <= 1.0001f) {
-            builder.set(CaptureRequest.SCALER_CROP_REGION, sensorArray)
-            return
+    private fun currentCrop(active: Rect): Rect {
+        return when (aspectMode) {
+            AspectMode.FULL      -> active
+            AspectMode.RATIO_1_1 -> centerCropForAspect(active, 1f / 1f)
+            AspectMode.RATIO_3_4 -> centerCropForAspect(active, 3f / 4f)
+            AspectMode.RATIO_9_16-> centerCropForAspect(active, 9f / 16f)
         }
-        val cropW = (sensorArray.width() / currentZoom).toInt()
-        val cropH = (sensorArray.height() / currentZoom).toInt()
-        val left = (sensorArray.centerX() - cropW / 2).coerceAtLeast(0)
-        val top  = (sensorArray.centerY() - cropH / 2).coerceAtLeast(0)
-        builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(left, top, left + cropW, top + cropH))
     }
 
-    private fun saveJpeg(bytes: ByteArray): Uri {
-        val name = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".jpg"
-        val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, name)
-            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Camera2App")
-                put(MediaStore.Images.Media.IS_PENDING, 1)
+    private fun centerCropForAspect(active: Rect, targetAspect: Float): Rect {
+        val sw = active.width().toFloat()
+        val sh = active.height().toFloat()
+        val sAspect = sw / sh
+
+        var outW = sw
+        var outH = sh
+        if (sAspect > targetAspect) {
+            outW = sh * targetAspect
+        } else if (sAspect < targetAspect) {
+            outH = sw / targetAspect
+        }
+        val left = (active.left + (sw - outW) * 0.5f).toInt()
+        val top  = (active.top  + (sh - outH) * 0.5f).toInt()
+        return Rect(left, top, (left + outW).toInt(), (top + outH).toInt())
+    }
+
+    private fun updatePreviewViewportRect(effectiveCrop: Rect) {
+        // 화면 컨테이너가 배치된 뒤에만 가능
+        val vw = previewContainer.width
+        val vh = previewContainer.height
+        if (vw <= 0 || vh <= 0) return
+
+        val cropW = effectiveCrop.width().toFloat()
+        val cropH = effectiveCrop.height().toFloat()
+        val targetAspect = cropW / cropH
+        val viewAspect = vw.toFloat() / vh
+
+        var visW = vw.toFloat()
+        var visH = vh.toFloat()
+        if (viewAspect > targetAspect) {
+            visW = vh * targetAspect
+        } else if (viewAspect < targetAspect) {
+            visH = vw / targetAspect
+        }
+
+        val matrix = Matrix()
+        val sx = visW / vw
+        val sy = visH / vh
+        matrix.setScale(sx, sy, vw / 2f, vh / 2f)
+        textureView.setTransform(matrix)
+    }
+
+    // ------------------------- 3A / Manual ---------------------
+
+    private fun apply3AandManual() {
+        val builder = previewRequestBuilder ?: return
+        if (!manualEnabled) {
+            builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+            builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_FAST)
+            builder.set(CaptureRequest.SENSOR_SENSITIVITY, null)
+            builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, null)
+            builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, null)
+        } else {
+            builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_OFF)
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO) // 필요 시 터치 AF로 트리거
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+            builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+
+            manualIso?.let { builder.set(CaptureRequest.SENSOR_SENSITIVITY, it) }
+            manualExposureNs?.let { builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, it) }
+            manualWbKelvin?.let { builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinToGains(it)) }
+        }
+    }
+
+    private fun copy3AFromPreview(dst: CaptureRequest.Builder) {
+        val src = previewRequestBuilder ?: return
+        // 주요 키 복사(필요한 것만)
+        fun <T> copy(key: CaptureRequest.Key<T>) {
+            src.get(key)?.let { dst.set(key, it) }
+        }
+        copy(CaptureRequest.CONTROL_MODE)
+        copy(CaptureRequest.CONTROL_AF_MODE)
+        copy(CaptureRequest.CONTROL_AE_MODE)
+        copy(CaptureRequest.CONTROL_AWB_MODE)
+        copy(CaptureRequest.SENSOR_SENSITIVITY)
+        copy(CaptureRequest.SENSOR_EXPOSURE_TIME)
+        copy(CaptureRequest.COLOR_CORRECTION_MODE)
+        copy(CaptureRequest.COLOR_CORRECTION_GAINS)
+        copy(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE)
+    }
+
+    // Kelvin을 대략적인 RGB gains로 변환(간단 근사)
+    private fun kelvinToGains(kelvin: Int): RggbChannelVector {
+        val k = kelvin.coerceIn(2000, 8000).toDouble()
+        val t = k / 100.0
+
+        val r: Double = if (t <= 66.0) {
+            255.0
+        } else {
+            329.698727446 * (t - 60.0).pow(-0.1332047592)
+        }
+
+        val g: Double = if (t <= 66.0) {
+            99.4708025861 * ln(t) - 161.1195681661
+        } else {
+            288.1221695283 * (t - 60.0).pow(-0.0755148492)
+        }
+
+        val b: Double = when {
+            t >= 66.0 -> 255.0
+            t <= 19.0 -> 0.0
+            else      -> 138.5177312231 * ln(t - 10.0) - 305.0447927307
+        }
+
+        // 0~255 → 대략 0~2.0 스케일로 변환(필요 시 조정)
+        fun clamp01(x: Double) = min(255.0, max(0.0, x)) / 128.0
+
+        val rr = clamp01(r).toFloat()
+        val gg = clamp01(g).toFloat()
+        val bb = clamp01(b).toFloat()
+
+        return RggbChannelVector(rr, gg, gg, bb)
+    }
+
+    // ------------------------- Size / FPS utils ----------------
+
+    private fun choosePreviewSize(map: StreamConfigurationMap, viewW: Int, viewH: Int): Size {
+        val out = map.getOutputSizes(SurfaceTexture::class.java)
+        if (out.isNullOrEmpty()) return Size(1280, 720)
+
+        // 화면 비율(현재 컨테이너)과 가장 가까운 사이즈 선택
+        val targetAspect = if (viewW > 0 && viewH > 0) viewW.toFloat() / viewH else 16f / 9f
+
+        var best: Size = out[0]
+        var bestScore = Double.MAX_VALUE
+        for (s in out) {
+            val a = s.width.toFloat() / s.height
+            val aspectDiff = abs(a - targetAspect)
+            val area = s.width * s.height
+            val score = aspectDiff * 10 + (1e7 / max(1, area).toDouble()) // 비율 우선 + 너무 큰 사이즈 페널티
+            if (score < bestScore) {
+                best = s
+                bestScore = score
             }
         }
-        val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)!!
-        resolver.openOutputStream(uri)?.use { it.write(bytes) }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
+        return best
+    }
+
+    private fun chooseJpegSize(map: StreamConfigurationMap?): Size {
+        val sizes = map?.getOutputSizes(ImageFormat.JPEG)
+        if (sizes.isNullOrEmpty()) return Size(previewSize.width, previewSize.height)
+        // 지나치게 큰 해상도는 저장 부담 → 12MP 근처 제한
+        val limit = 4000 * 3000
+        return sizes.sortedByDescending { it.width * it.height }
+            .firstOrNull { it.width * it.height <= limit } ?: sizes.last()
+    }
+
+    private fun bestFpsRange(ch: CameraCharacteristics?): Range<Int> {
+        val ranges = ch?.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: return Range(30, 30)
+        // 60fps 우선 선택, 없으면 최고 하한/상한이 높은 것 선택
+        var best = ranges[0]
+        var bestScore = -1
+        for (r in ranges) {
+            val score = (if (r.lower >= 60) 1000 else 0) + r.upper * 2 + r.lower
+            if (score > bestScore) {
+                best = r
+                bestScore = score
+            }
         }
-        return uri
+        return best
     }
 
-    private fun startBackground() {
-        bgThread = HandlerThread("Camera2BG").also { it.start() }
-        bgHandler = Handler(bgThread!!.looper)
+    // ------------------------- Threads -------------------------
+
+    private fun startBackgroundThread() {
+        backgroundThread = HandlerThread("Camera2BG").also { it.start() }
+        backgroundHandler = Handler(backgroundThread!!.looper)
     }
 
-    private fun stopBackground() {
-        bgThread?.quitSafely()
-        bgThread?.join()
-        bgThread = null
-        bgHandler = null
-    }
-
-    private fun closeSession() {
-        session?.close(); session = null
-        cameraDevice?.close(); cameraDevice = null
-        imageReader?.close(); imageReader = null
-    }
-
-    /** Kelvin 근사로 수동 WB */
-    private fun updateRepeatingWithGains(gains: RggbChannelVector) {
-        val st = textureView.surfaceTexture ?: return
-        val previewSurface = Surface(st)
-        val req = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)?.apply {
-            addTarget(previewSurface)
-            set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_OFF)
-            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-            set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
-            set(CaptureRequest.COLOR_CORRECTION_GAINS, gains)
-
-            set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
-            set(CaptureRequest.SENSOR_SENSITIVITY, currentIso.coerceIn(isoRange.lower, isoRange.upper))
-            val safeExp = currentExposureNs.coerceAtMost(frameNs - exposureMarginNs)
-            set(CaptureRequest.SENSOR_EXPOSURE_TIME, safeExp)
-            set(CaptureRequest.SENSOR_FRAME_DURATION, frameNs)
-            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(targetFps, targetFps))
-            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-        } ?: return
-        session?.setRepeatingRequest(req.build(), null, bgHandler)
-    }
-
-    // ===== 해상도 사다리 (FHD 우선) =====
-    private fun buildSizeLadder(map: StreamConfigurationMap, viewAspect: Float) {
-        val sizesAll = map.getOutputSizes(SurfaceTexture::class.java)?.toList().orEmpty()
-            .filter { it.width > 0 && it.height > 0 }
-            .filter { isAtMostFhd(it) } // ✅ FHD 이하만
-
-        val tol = 0.03f
-        val candidates = sizesAll
-            .filter { abs(it.width / it.height.toFloat() - viewAspect) <= tol }
-            .ifEmpty { sizesAll }
-
-        // ✅ 1920x1080 정확 일치 우선
-        val fhd = candidates.firstOrNull {
-            (it.width == 1920 && it.height == 1080) || (it.width == 1080 && it.height == 1920)
-        }
-        sizeLadder = if (fhd != null) listOf(fhd) else candidates.sortedByDescending { it.width * it.height }
-        sizeIndex = 0
-    }
-
-    private fun maybeAdaptResolutionForFps() {
-        if (!adaptiveResolutionEnabled) return   // ✅ FHD 고정이면 종료
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastAdaptMs < 1200) return
-
-        val guard = 2.0
-        if (fpsSmoothed > targetFps + guard && sizeIndex > 0) {
-            sizeIndex--
-            switchPreviewSize(sizeLadder[sizeIndex])
-            lastAdaptMs = now
-        } else if (fpsSmoothed < targetFps - guard && sizeIndex < sizeLadder.lastIndex) {
-            sizeIndex++
-            switchPreviewSize(sizeLadder[sizeIndex])
-            lastAdaptMs = now
+    private fun stopBackgroundThread() {
+        backgroundThread?.quitSafely()
+        try {
+            backgroundThread?.join()
+        } catch (_: InterruptedException) {
+        } finally {
+            backgroundThread = null
+            backgroundHandler = null
         }
     }
 
-    private fun switchPreviewSize(newSize: Size) {
-        val st = textureView.surfaceTexture ?: return
-        previewSize = newSize
-        currentZoom = 1f                    // ✅ 해상도 변경 시 줌 리셋
-        st.setDefaultBufferSize(previewSize.width, previewSize.height)
-        updateRepeating()
-        textureView.post { applyCenterCropTransform() }
+    // ------------------------- Listeners / Callbacks -----------
+
+    private val surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+        override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) {
+            openCamera()
+        }
+        override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) {
+            // 화면 회전/리사이즈 시 미리보기 행렬 갱신
+            sensorActiveArray?.let { updatePreviewViewportRect(currentCrop(it)) }
+        }
+        override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean = true
+        override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) {}
     }
 
-    // ----- 로그 -----
-    private fun dumpFpsAndSizes() {
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
-        val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-        if (ranges.isNullOrEmpty()) Log.i("CAM", "AE FPS ranges: <none>")
-        else ranges.forEach { Log.i("CAM", "AE FPS: ${it.lower}..${it.upper}") }
-        map.getOutputSizes(SurfaceTexture::class.java)?.forEach {
-            Log.i("CAM", "Preview size supported: ${it.width}x${it.height}")
+    private val stateCallback = object : CameraDevice.StateCallback() {
+        override fun onOpened(device: CameraDevice) {
+            cameraOpenCloseLock.release()
+            cameraDevice = device
+            createCameraSession(device)
+        }
+        override fun onDisconnected(device: CameraDevice) {
+            cameraOpenCloseLock.release()
+            device.close()
+            cameraDevice = null
+        }
+        override fun onError(device: CameraDevice, error: Int) {
+            cameraOpenCloseLock.release()
+            device.close()
+            cameraDevice = null
+        }
+    }
+
+    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult
+        ) {
+            // FPS 측정 (간단한 EMA)
+            val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+            if (lastFrameTsNs != 0L) {
+                val dt = (ts - lastFrameTsNs) / 1e9
+                if (dt > 0) {
+                    val inst = 1.0 / dt
+                    fpsEMA = if (fpsEMA == 0.0) inst else fpsEMA * 0.9 + inst * 0.1
+                    onFpsChanged(fpsEMA)
+                }
+            }
+            lastFrameTsNs = ts
+        }
+    }
+
+    private val onJpegAvailableListener = android.media.ImageReader.OnImageAvailableListener { reader ->
+        val image = reader.acquireNextImage() ?: return@OnImageAvailableListener
+        backgroundHandler?.post {
+            try {
+                val buffer: ByteBuffer = image.planes[0].buffer
+                val bytes = ByteArray(buffer.remaining())
+                buffer.get(bytes)
+
+                val resolver = context.contentResolver
+                val name = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".jpg"
+                val cv = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/Camera2App")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv)
+                uri?.let {
+                    resolver.openOutputStream(it)?.use { os ->
+                        os.write(bytes)
+                    }
+                    cv.clear()
+                    cv.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    resolver.update(it, cv, null, null)
+                    onSaved(it)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Save JPEG failed: ${e.message}")
+            } finally {
+                image.close()
+            }
+        }
+    }
+
+    // ------------------------- Helpers -------------------------
+
+    private fun chooseCameraId() {
+        val ids = cameraManager.cameraIdList
+        // 전/후면 스위치
+        val backFirst = !isFront
+        val desiredFacing = if (isFront) CameraCharacteristics.LENS_FACING_FRONT
+        else CameraCharacteristics.LENS_FACING_BACK
+
+        // 1) 원하는 방향
+        ids.firstOrNull { id ->
+            cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == desiredFacing
+        }?.let { cameraId = it; return }
+
+        // 2) 없다면 반대쪽이라도
+        ids.firstOrNull()?.let { cameraId = it } ?: run {
+            throw IllegalStateException("No camera available")
+        }
+    }
+
+    companion object {
+        private const val TAG = "Camera2Controller"
+
+        object OrientationUtil {
+            fun getJpegOrientation(chars: CameraCharacteristics?, orientation: Int): Int {
+                // 간단한 90도 배수 처리(필요하면 실제 디바이스 회전값 사용)
+                val sensorOrientation = chars?.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+                return (sensorOrientation + 0) % 360
+            }
         }
     }
 }
