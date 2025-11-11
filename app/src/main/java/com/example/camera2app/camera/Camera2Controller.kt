@@ -300,14 +300,22 @@ class Camera2Controller(
 
     fun takePicture() {
         val jpegSurface = imageReader?.surface ?: return
+        val rotation = textureView.display?.rotation ?: Surface.ROTATION_0
+
         val req = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(jpegSurface)
-            set(CaptureRequest.JPEG_ORIENTATION, getJpegOrientation(chars))
+            // ✅ 올바른 EXIF 회전값 넣기
+            set(
+                CaptureRequest.JPEG_ORIENTATION,
+                OrientationUtil.getJpegOrientation(chars, rotation)
+            )
+
             applyCommonControls(this, preview = false)
             applyColorAuto(this)
         }
         session?.capture(req.build(), null, bgHandler)
     }
+
 
     private fun applyColorAuto(builder: CaptureRequest.Builder) {
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
