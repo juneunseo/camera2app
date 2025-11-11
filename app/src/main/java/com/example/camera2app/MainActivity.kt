@@ -7,11 +7,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.LinearLayout
-import android.widget.SeekBar
-import android.widget.Space
-import android.widget.TextView
-import android.widget.FrameLayout
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -22,56 +18,29 @@ import com.example.camera2app.util.GalleryUtils
 import com.example.camera2app.util.Permissions
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.pow
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var controller: Camera2Controller
 
-    // 오버레이 태그
-    private val TAG_ISO = "overlayIso"
-    private val TAG_SHT = "overlayShutter"
-    private val TAG_WB = "overlayWb"
+    // 오버레이 태그(코틀린 네이밍 경고 안 뜨게 카멜케이스 사용)
+    private val tagIso = "overlayIso"
+    private val tagShutter = "overlayShutter"
+    private val tagWb = "overlayWb"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // ── FPS 라벨 (좌측 상단, 반투명 배경)
-//        val fpsText = TextView(this).apply {
-//            text = "0.0 FPS"
-//            setPadding(dp(10), dp(6), dp(10), dp(6))
-//            setTextColor(0xFFFFFFFF.toInt())
-//            setBackgroundColor(0x66000000) // 반투명 검정
-//            textSize = 12f
-//        }
-        val fpsLp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.START
-        ).apply { setMargins(dp(12), dp(12), dp(12), dp(12)) }
-//        binding.previewContainer.addView(fpsText, fpsLp)
-
-        // 상태바 인셋 반영(상단바/ FPS 둘 다)
-        ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
-            val topInset = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
-            binding.topBar.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                topMargin = topInset
-            }
-//            fpsText.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-//                topMargin = topInset + dp(8)
-//            }
-            insets
-        }
-
-        // Camera2 컨트롤러 + FPS 콜백 연결
-        // MainActivity.kt (핵심 변경만)
+        // ── Camera2 컨트롤러 + FPS 콜백 연결
         controller = Camera2Controller(
             context = this,
             textureView = binding.textureView,
             onFrameLevelChanged = { /* no-op */ },
-            onSaved = { /* no-op */ },
+            onSaved = { /* no-op (갤러리 토스트 등 원하면 여기서 처리) */ },
             previewContainer = binding.previewContainer,
             onFpsChanged = { fps ->
                 runOnUiThread {
@@ -79,18 +48,19 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         )
-        // 상태바 인셋 적용: topBar + fpsText 모두 내려주기
+
+        // 상태바 인셋을 topBar와 fpsText에 1회성으로 적용
         ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
             val topInset = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
             binding.topBar.updateLayoutParams<ViewGroup.MarginLayoutParams> {
                 topMargin = topInset
             }
             binding.fpsText.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                // FPS 라벨은 약간 더 내려서 겹침 방지
                 topMargin = topInset + dp(8)
             }
             insets
         }
-
 
         setupUi()
         requestPermissionsIfNeeded()
@@ -127,9 +97,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun removeAllSettingOverlays() {
-        removeOverlayByTag(TAG_ISO)
-        removeOverlayByTag(TAG_SHT)
-        removeOverlayByTag(TAG_WB)
+        removeOverlayByTag(tagIso)
+        removeOverlayByTag(tagShutter)
+        removeOverlayByTag(tagWb)
     }
 
     private fun space(wDp: Int) = Space(this).apply {
@@ -177,6 +147,7 @@ class MainActivity : AppCompatActivity() {
             }
             addView(title)
 
+            // 스페이서
             addView(View(this@MainActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(0, 0, 1f)
             })
@@ -221,7 +192,7 @@ class MainActivity : AppCompatActivity() {
         controller.setManualEnabled(true)
 
         val overlay = makeOverlay(
-            tag = TAG_ISO,
+            tag = tagIso,
             titleText = "ISO",
             initialValueText = "ISO 400",
             onAuto = { controller.setManualEnabled(false) },
@@ -256,7 +227,7 @@ class MainActivity : AppCompatActivity() {
         controller.setManualEnabled(true)
 
         val overlay = makeOverlay(
-            tag = TAG_SHT,
+            tag = tagShutter,
             titleText = "Shutter Speed",
             initialValueText = "Shutter 1/60 s",
             onAuto = { controller.setManualEnabled(false) },
@@ -268,24 +239,25 @@ class MainActivity : AppCompatActivity() {
             }
 
             fun progressToExposureNs(p: Int): Long {
-                val min = 1.25e-4
-                val max = 0.25
+                // 0..1000 → 0..1 로그 스케일
                 val t = p / 1000.0
-                val sec = min * Math.pow(max / min, t)
+                val min = 1.25e-4  // 1/8000 s
+                val max = 0.25     // 1/4 s
+                val sec = min * (max / min).pow(t)
                 return (sec * 1e9).toLong()
             }
 
             fun label(ns: Long): String {
                 val s = ns / 1e9
                 val denom = listOf(8000, 4000, 2000, 1000, 500, 250, 125, 60, 30, 15, 8, 4)
-                val near = denom.minBy { abs(1.0 / it - s) }
+                val near = denom.minBy { d -> abs(1.0 / d - s) }
                 return if (s < 0.9) "1/$near s" else String.format(Locale.US, "%.1fs", s)
             }
 
             fun apply(p: Int) {
                 val ns = progressToExposureNs(p)
                 valueText.text = "Shutter ${label(ns)}"
-                controller.setExposureTimeNs(ns)
+                controller.setExposureTimeNs(ns) // 컨트롤러가 120fps 유지 위해 자동 캡
             }
             seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, p: Int, f: Boolean) = apply(p)
@@ -306,7 +278,7 @@ class MainActivity : AppCompatActivity() {
         controller.setManualEnabled(true)
 
         val overlay = makeOverlay(
-            tag = TAG_WB,
+            tag = tagWb,
             titleText = "White Balance (K)",
             initialValueText = "A 4400K",
             onAuto = { controller.setManualEnabled(false) },
