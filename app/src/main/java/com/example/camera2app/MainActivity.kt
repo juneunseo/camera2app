@@ -2,16 +2,17 @@ package com.example.camera2app
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.Space
 import android.widget.TextView
-import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -19,7 +20,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
 import com.example.camera2app.camera.Camera2Controller
 import com.example.camera2app.databinding.ActivityMainBinding
-import com.example.camera2app.util.GalleryUtils
+import com.example.camera2app.gallery.GalleryActivity
 import com.example.camera2app.util.Permissions
 import java.util.Locale
 import kotlin.math.abs
@@ -104,7 +105,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupUi() {
         binding.btnShutter.setOnClickListener { controller.takePicture() }
-        binding.btnGallery.setOnClickListener { GalleryUtils.openSystemPicker(this) }
+
+        // ✅ 갤러리 버튼: 커스텀 갤러리 화면 열기 (기존 로직 유지하지 않고 대체)
+        binding.btnGallery.setOnClickListener {
+            startActivity(Intent(this, GalleryActivity::class.java))
+        }
 
         binding.btnSwitch.setOnClickListener {
             controller.switchCamera()
@@ -185,6 +190,7 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
+
             val title = TextView(this@MainActivity).apply {
                 text = titleText
                 setTextColor(0xFFFFFFFF.toInt())
