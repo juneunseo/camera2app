@@ -12,6 +12,7 @@ import android.widget.SeekBar
 import android.widget.Space
 import android.widget.TextView
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -39,34 +40,20 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         // ── FPS 라벨 (좌측 상단, 반투명 배경)
-//        val fpsText = TextView(this).apply {
-//            text = "0.0 FPS"
-//            setPadding(dp(10), dp(6), dp(10), dp(6))
-//            setTextColor(0xFFFFFFFF.toInt())
-//            setBackgroundColor(0x66000000) // 반투명 검정
-//            textSize = 12f
-//        }
         val fpsLp = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.START
         ).apply { setMargins(dp(12), dp(12), dp(12), dp(12)) }
-//        binding.previewContainer.addView(fpsText, fpsLp)
 
-        // 상태바 인셋 반영(상단바/ FPS 둘 다)
+        // 상태바 인셋 반영
         ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
             val topInset = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
-            binding.topBar.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                topMargin = topInset
-            }
-//            fpsText.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-//                topMargin = topInset + dp(8)
-//            }
+            binding.topBar.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = topInset }
             insets
         }
 
-        // Camera2 컨트롤러 + FPS 콜백 연결
-        // MainActivity.kt (핵심 변경만)
+        // Camera2 컨트롤러 초기화
         controller = Camera2Controller(
             context = this,
             textureView = binding.textureView,
@@ -80,31 +67,36 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
-        // controller 생성 끝난 직후에 추가
+        // 상태바 인셋 다시 적용
+        ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
+            val topInset = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
+            binding.topBar.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = topInset }
+            binding.fpsText.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = topInset + dp(8) }
+            insets
+        }
+
+        // ▶ 화면비율 버튼
         binding.btnAspect.setOnClickListener {
             val mode = controller.cycleAspectMode()
             val label = when (mode) {
-                Camera2Controller.AspectMode.FULL       -> "Full"
+                Camera2Controller.AspectMode.FULL       -> "full"
                 Camera2Controller.AspectMode.RATIO_1_1  -> "1:1"
                 Camera2Controller.AspectMode.RATIO_3_4  -> "3:4"
                 Camera2Controller.AspectMode.RATIO_9_16 -> "9:16"
             }
-            android.widget.Toast.makeText(this, "Aspect: $label", android.widget.Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Aspect: $label", Toast.LENGTH_SHORT).show()
         }
 
-
-        // 상태바 인셋 적용: topBar + fpsText 모두 내려주기
-        ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
-            val topInset = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
-            binding.topBar.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                topMargin = topInset
+        // 🔦 플래시 버튼: OFF ↔ TORCH
+        binding.btnFlash.setOnClickListener {
+            val next = when (controller.getFlashMode()) {
+                Camera2Controller.FlashMode.OFF   -> Camera2Controller.FlashMode.TORCH
+                Camera2Controller.FlashMode.TORCH -> Camera2Controller.FlashMode.OFF
+                else -> Camera2Controller.FlashMode.OFF
             }
-            binding.fpsText.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                topMargin = topInset + dp(8)
-            }
-            insets
+            controller.setFlashMode(next)
+            Toast.makeText(this, "Flash: ${flashLabel(next)}", Toast.LENGTH_SHORT).show()
         }
-
 
         setupUi()
         requestPermissionsIfNeeded()
@@ -113,22 +105,31 @@ class MainActivity : AppCompatActivity() {
     private fun setupUi() {
         binding.btnShutter.setOnClickListener { controller.takePicture() }
         binding.btnGallery.setOnClickListener { GalleryUtils.openSystemPicker(this) }
-        binding.btnSwitch.setOnClickListener { controller.switchCamera() }
+
+        binding.btnSwitch.setOnClickListener {
+            controller.switchCamera()
+            controller.setFlashMode(Camera2Controller.FlashMode.OFF)
+        }
 
         binding.btnIso.setOnClickListener { showIsoOverlay() }
         binding.btnSec.setOnClickListener { showShutterOverlay() }
         binding.btnWb.setOnClickListener { showWbOverlay() }
     }
 
-    // ───────────────── 공용 유틸 ─────────────────
+    // ───────────── 플래시 라벨 ─────────────
+    private fun flashLabel(m: Camera2Controller.FlashMode) = when (m) {
+        Camera2Controller.FlashMode.OFF   -> "OFF"
+        Camera2Controller.FlashMode.TORCH -> "TORCH"
+        else -> "OFF"
+    }
 
+    // ───────────────── 공용 유틸 ─────────────────
     private fun statusBarHeight(): Int {
         val insets = ViewCompat.getRootWindowInsets(binding.root)
         return insets?.getInsets(WindowInsetsCompat.Type.statusBars())?.top ?: 0
     }
 
-    private fun dp(i: Int): Int =
-        (resources.displayMetrics.density * i + 0.5f).toInt()
+    private fun dp(i: Int): Int = (resources.displayMetrics.density * i + 0.5f).toInt()
 
     private fun removeOverlayByTag(tag: String) {
         val parent = binding.previewContainer

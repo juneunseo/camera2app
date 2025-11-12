@@ -29,6 +29,7 @@ object OrientationUtil {
         // 전면은 미러 보정: 회전 부호를 반대로
         val deviceForExif = if (front) -device else device
 
+
         // 0..359 로 정규화
         return (sensor + deviceForExif + 360) % 360
     }

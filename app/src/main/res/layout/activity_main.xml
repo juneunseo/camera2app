@@ -1,19 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <!-- 프리뷰 컨테이너 -->
+    <!-- ▼ 프리뷰 컨테이너: TextureView + 그리드 오버레이 (중복 금지, 한 번만 선언) -->
     <FrameLayout
         android:id="@+id/previewContainer"
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
+        android:layout_height="match_parent"
+        android:keepScreenOn="true">
 
         <TextureView
             android:id="@+id/textureView"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
+
+        <!-- 그리드 오버레이 -->
+        <com.example.camera2app.ui.OverlayView
+            android:id="@+id/overlayView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
     </FrameLayout>
+
+
+
+
 
     <!-- 상단 바 -->
     <LinearLayout
@@ -25,12 +37,28 @@
         android:gravity="center_vertical|end"
         android:background="#CC000000"
         android:paddingStart="12dp"
-        android:paddingEnd="12dp">
+        android:paddingEnd="12dp"
+        android:elevation="8dp">
 
         <View
             android:layout_width="0dp"
             android:layout_height="1dp"
             android:layout_weight="1" />
+
+        <!-- FPS 라벨 -->
+        <TextView
+            android:id="@+id/fpsText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="12dp"
+            android:padding="6dp"
+            android:text="0.0 FPS"
+            android:textColor="#FFFFFFFF"
+            android:textSize="12sp"
+            android:background="#66000000"
+            android:elevation="8dp" />
 
         <ImageButton
             android:id="@+id/btnIso"
@@ -38,7 +66,8 @@
             android:layout_height="40dp"
             android:layout_marginStart="8dp"
             android:background="@android:color/transparent"
-            android:src="@drawable/ic_iso" />
+            android:contentDescription="ISO"
+            app:srcCompat="@drawable/ic_iso" />
 
         <ImageButton
             android:id="@+id/btnWb"
@@ -46,7 +75,8 @@
             android:layout_height="40dp"
             android:layout_marginStart="8dp"
             android:background="@android:color/transparent"
-            android:src="@drawable/ic_white_balance" />
+            android:contentDescription="White Balance"
+            app:srcCompat="@drawable/ic_white_balance" />
 
         <ImageButton
             android:id="@+id/btnSec"
@@ -54,20 +84,33 @@
             android:layout_height="40dp"
             android:layout_marginStart="8dp"
             android:background="@android:color/transparent"
-            android:src="@drawable/ic_shutter_speed" />
+            android:contentDescription="Shutter Speed"
+            app:srcCompat="@drawable/ic_shutter_speed" />
 
-        <!-- topBar 안의 다른 아이콘들과 같은 레이아웃에 추가 -->
+        <!-- 화면비 버튼 -->
         <ImageButton
             android:id="@+id/btnAspect"
             android:layout_width="40dp"
             android:layout_height="40dp"
+            android:layout_marginStart="8dp"
             android:background="@android:color/transparent"
-            android:contentDescription="@string/app_name"
-            android:src="@drawable/ic_aspect"
-            android:tint="#FFFFFFFF"
+            android:contentDescription="Aspect"
+            app:srcCompat="@drawable/ic_aspect"
             android:padding="6dp" />
 
+
+        <ImageButton
+            android:id="@+id/btnFlash"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:src="@drawable/ic_aspect"
+            android:contentDescription="플래시"
+            app:tint="#FFFFFF"
+            android:layout_margin="8dp" />
+
     </LinearLayout>
+
 
     <!-- 하단 바 -->
     <LinearLayout
@@ -78,14 +121,16 @@
         android:orientation="horizontal"
         android:gravity="center"
         android:background="#D9000000"
-        android:paddingHorizontal="24dp">
+        android:paddingHorizontal="24dp"
+        android:elevation="8dp">
 
         <ImageButton
             android:id="@+id/btnGallery"
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="@android:color/transparent"
-            android:src="@drawable/ic_gallery" />
+            android:contentDescription="Open Gallery"
+            app:srcCompat="@drawable/ic_gallery" />
 
         <View
             android:layout_width="0dp"
@@ -97,7 +142,8 @@
             android:layout_width="84dp"
             android:layout_height="84dp"
             android:background="@android:color/transparent"
-            android:src="@drawable/ic_shutter" />
+            android:contentDescription="Shutter"
+            app:srcCompat="@drawable/ic_shutter" />
 
         <View
             android:layout_width="0dp"
@@ -109,23 +155,12 @@
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="@android:color/transparent"
-            android:src="@drawable/ic_switch_camera" />
+            android:contentDescription="Switch Camera"
+            app:srcCompat="@drawable/ic_switch_camera" />
     </LinearLayout>
 
-    <!-- 앱 FPS 라벨 (좌상단) -->
-    <TextView
-        android:id="@+id/fpsText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top|start"
-        android:layout_marginStart="12dp"
-        android:layout_marginTop="12dp"
-        android:padding="6dp"
-        android:text="0.0 FPS"
-        android:textColor="#FFFFFFFF"
-        android:textSize="12sp"
-        android:background="#66000000" />
 
+    <!-- 셔터 플래시 -->
     <View
         android:id="@+id/shutterFlashView"
         android:layout_width="match_parent"
@@ -133,6 +168,5 @@
         android:background="#FFFFFF"
         android:alpha="0"
         android:clickable="false"/>
-
 
 </FrameLayout>
