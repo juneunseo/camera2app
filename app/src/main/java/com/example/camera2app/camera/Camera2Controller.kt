@@ -33,6 +33,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min   // ★ 추가
 
 class Camera2Controller(
     private val context: Context,
@@ -91,7 +92,7 @@ class Camera2Controller(
 
     private fun isAtMostFhd(sz: Size): Boolean {
         val w = max(sz.width, sz.height)
-        val h = minOf(sz.width, sz.height)
+        val h = min(sz.width, sz.height)
         return (w <= MAX_W && h <= MAX_H)
     }
 
@@ -138,6 +139,7 @@ class Camera2Controller(
     // --- Aspect ratio ---
     enum class AspectMode { FULL, RATIO_1_1, RATIO_3_4, RATIO_9_16 }
     private var aspectMode: AspectMode = AspectMode.FULL
+
     fun cycleAspectMode(): AspectMode {
         aspectMode = when (aspectMode) {
             AspectMode.FULL -> AspectMode.RATIO_1_1
@@ -145,16 +147,22 @@ class Camera2Controller(
             AspectMode.RATIO_3_4 -> AspectMode.RATIO_9_16
             AspectMode.RATIO_9_16 -> AspectMode.FULL
         }
-        maybeSwitchPreviewAspect(); updateRepeating()
+        updatePreviewContainerForAspect()  // ★ 컨테이너 비율 먼저 조정
+        maybeSwitchPreviewAspect()
+        updateRepeating()
         textureView.post { applyCenterCropTransform() }
         return aspectMode
     }
+
     fun setAspectMode(mode: AspectMode) {
         if (aspectMode == mode) return
         aspectMode = mode
-        maybeSwitchPreviewAspect(); updateRepeating()
+        updatePreviewContainerForAspect()  // ★ 컨테이너 비율 먼저 조정
+        maybeSwitchPreviewAspect()
+        updateRepeating()
         textureView.post { applyCenterCropTransform() }
     }
+
     fun getAspectMode(): AspectMode = aspectMode
 
     // --- External API ---
@@ -203,8 +211,13 @@ class Camera2Controller(
     fun onResume() {
         startBackground()
         textureView.surfaceTextureListener = surfaceListener
-        textureView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyCenterCropTransform() }
-        if (textureView.isAvailable) openCamera(textureView.width, textureView.height)
+        textureView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            applyCenterCropTransform()
+        }
+        if (textureView.isAvailable) {
+            updatePreviewContainerForAspect()   // ★ 재개 시 비율 적용
+            openCamera(textureView.width, textureView.height)
+        }
     }
     fun onPause() {
         fpsCounter = 0; lastFpsTickMs = 0L; fpsSmoothed = 0.0
@@ -218,13 +231,20 @@ class Camera2Controller(
         closeSession()
         currentZoom = 1f
         val w = textureView.width; val h = textureView.height
-        if (w > 0 && h > 0) openCamera(w, h) else textureView.surfaceTextureListener = surfaceListener
+        if (w > 0 && h > 0) {
+            updatePreviewContainerForAspect()
+            openCamera(w, h)
+        } else textureView.surfaceTextureListener = surfaceListener
     }
 
     // --- Surface listener / FPS ---
     private val surfaceListener = object : TextureView.SurfaceTextureListener {
-        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) = openCamera(w, h)
-        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) = applyCenterCropTransform()
+        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+            updatePreviewContainerForAspect()
+            openCamera(w, h)
+        }
+        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) =
+            applyCenterCropTransform()
         override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
         override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
             fpsCounter++
@@ -317,7 +337,7 @@ class Camera2Controller(
                         addTarget(previewSurface)
                         applyCommonControls(this, preview = true)
                         applyColorAuto(this)
-                        applyFlash(this, forPreview = true) // ★ 프리뷰에 플래시 적용(토치/자동 측정)
+                        applyFlash(this, forPreview = true)
                     }
                     s.setRepeatingRequest(req.build(), null, bgHandler)
                     textureView.post { applyCenterCropTransform() }
@@ -328,7 +348,7 @@ class Camera2Controller(
 
     // --- Capture still ---
     fun takePicture() {
-        textureView.post { playShutterFlash() } // 화면 플래시
+        textureView.post { playShutterFlash() }
 
         val jpegSurface = imageReader?.surface ?: return
         val rotation = textureView.display?.rotation ?: Surface.ROTATION_0
@@ -337,10 +357,9 @@ class Camera2Controller(
             addTarget(jpegSurface)
             set(CaptureRequest.JPEG_ORIENTATION, getJpegOrientation(chars, rotation))
 
-            // 스틸: 화질 우선
             applyCommonControls(this, preview = false)
             applyColorAuto(this)
-            applyFlash(this, forPreview = false) // ★ 스틸에 플래시 적용(싱글 발광/자동)
+            applyFlash(this, forPreview = false)
             set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
             set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
             set(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_HIGH_QUALITY)
@@ -354,7 +373,7 @@ class Camera2Controller(
         builder.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
         builder.set(CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
         builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-        builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
+        builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_FAST)
     }
 
     // --- Repeating update ---
@@ -365,7 +384,7 @@ class Camera2Controller(
             addTarget(previewSurface)
             applyCommonControls(this, preview = true)
             applyColorAuto(this)
-            applyFlash(this, forPreview = true) // ★ 반영
+            applyFlash(this, forPreview = true)
         } ?: return
         session?.setRepeatingRequest(req.build(), null, bgHandler)
         textureView.post { applyCenterCropTransform() }
@@ -402,7 +421,7 @@ class Camera2Controller(
             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(targetFps, targetFps))
             builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ)
         }
-        applyZoomOnly(builder) // 화면비는 TextureView matrix에서 처리, 여기선 줌만
+        applyZoomOnly(builder)
     }
 
     private fun applyZoomOnly(builder: CaptureRequest.Builder) {
@@ -418,9 +437,15 @@ class Camera2Controller(
         builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(left, top, left + cropW, top + cropH))
     }
 
-    // --- View transform (center crop / fit + aspect) ---
+    // --- View transform (center crop / fit) ---
+    /**
+     * 여기서는 **항상 균일 스케일**만 한다.
+     * 화면비(1:1 / 3:4 / 9:16 등)는 previewContainer의 레이아웃으로 맞추고,
+     * 이 함수는 "카메라 버퍼를 컨테이너에 맞게 채우기/맞추기"만 담당.
+     */
     fun applyCenterCropTransform() {
-        val vw = textureView.width.toFloat(); val vh = textureView.height.toFloat()
+        val vw = textureView.width.toFloat()
+        val vh = textureView.height.toFloat()
         if (vw <= 0f || vh <= 0f || previewSize.width <= 0 || previewSize.height <= 0) return
 
         val rotation = textureView.display?.rotation ?: Surface.ROTATION_0
@@ -431,31 +456,17 @@ class Camera2Controller(
 
         val viewRect = android.graphics.RectF(0f, 0f, vw, vh)
         val bufferRect = android.graphics.RectF(0f, 0f, bufW, bufH)
-        val cx = viewRect.centerX(); val cy = viewRect.centerY()
+        val cx = viewRect.centerX()
+        val cy = viewRect.centerY()
+
         bufferRect.offset(cx - bufferRect.centerX(), cy - bufferRect.centerY())
 
         val m = Matrix()
         m.setRectToRect(bufferRect, viewRect, Matrix.ScaleToFit.CENTER)
 
-        val baseScale = if (fillPreview) max(vh / bufH, vw / bufW) else minOf(vh / bufH, vw / bufW)
-        m.postScale(baseScale, baseScale, cx, cy)
-
-        val targetAspect = when (aspectMode) {
-            AspectMode.FULL -> vw / vh
-            AspectMode.RATIO_1_1 -> 1f / 1f
-            AspectMode.RATIO_3_4 -> 3f / 4f
-            AspectMode.RATIO_9_16 -> 9f / 16f
-        }
-        val viewAspect = vw / vh
-        if (fillPreview) {
-            if (viewAspect > targetAspect) {
-                val scaleY = (viewAspect / targetAspect)
-                m.postScale(1f, scaleY, cx, cy)
-            } else if (viewAspect < targetAspect) {
-                val scaleX = (targetAspect / viewAspect)
-                m.postScale(scaleX, 1f, cx, cy)
-            }
-        }
+        // ★ 균일 스케일만 사용 (비율 왜곡 없음)
+        val scale = if (fillPreview) max(vh / bufH, vw / bufW) else min(vh / bufH, vw / bufW)
+        m.postScale(scale, scale, cx, cy)
 
         when (rotation) {
             Surface.ROTATION_90 -> m.postRotate(90f, cx, cy)
@@ -522,7 +533,7 @@ class Camera2Controller(
         textureView.post { applyCenterCropTransform() }
     }
 
-    // --- Preview aspect change path ---
+    // --- Preview aspect helpers ---
     private fun targetAspectValue(): Float = when (aspectMode) {
         AspectMode.FULL -> {
             val vw = max(1, previewContainer.width)
@@ -556,6 +567,92 @@ class Camera2Controller(
         }
     }
 
+    // ★ NEW: previewContainer의 레이아웃을 실제 비율에 맞게 조정
+    // ★ previewContainer의 레이아웃을 실제 비율에 맞게 조정 + 세로 중앙 정렬
+    private fun updatePreviewContainerForAspect() {
+        val parent = previewContainer.parent as? ViewGroup ?: return
+        val pw = parent.width
+        val ph = parent.height
+        if (pw == 0 || ph == 0) {
+            // 레이아웃 아직 안 잡혀있으면 나중에 다시 시도
+            previewContainer.post { updatePreviewContainerForAspect() }
+            return
+        }
+
+        val lp = previewContainer.layoutParams
+        if (lp is ViewGroup.MarginLayoutParams) {
+            when (aspectMode) {
+                AspectMode.FULL -> {
+                    lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                    lp.height = ViewGroup.LayoutParams.MATCH_PARENT
+                    lp.topMargin = 0
+                    lp.bottomMargin = 0
+                }
+                AspectMode.RATIO_1_1,
+                AspectMode.RATIO_3_4,
+                AspectMode.RATIO_9_16 -> {
+                    val aspect = when (aspectMode) {
+                        AspectMode.RATIO_1_1 -> 1f / 1f
+                        AspectMode.RATIO_3_4 -> 3f / 4f
+                        AspectMode.RATIO_9_16 -> 9f / 16f
+                        else -> 1f
+                    }
+
+                    // 부모 너비 기준으로 크기 계산
+                    var w = pw
+                    var h = (w / aspect).toInt()
+
+                    // 너무 길면 부모 높이에 맞추고 다시 너비 계산
+                    if (h > ph) {
+                        h = ph
+                        w = (h * aspect).toInt()
+                    }
+
+                    lp.width = w
+                    lp.height = h
+
+                    // ★ 세로 중앙 정렬: 위/아래 마진을 반반
+                    val remaining = ph - h
+                    val top = remaining / 2
+                    val bottom = remaining - top
+                    lp.topMargin = top.coerceAtLeast(0)
+                    lp.bottomMargin = bottom.coerceAtLeast(0)
+                }
+            }
+            previewContainer.layoutParams = lp
+        } else {
+            // MarginLayoutParams가 아닌 특이 케이스는 기존 로직만 유지
+            when (aspectMode) {
+                AspectMode.FULL -> {
+                    lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                    lp.height = ViewGroup.LayoutParams.MATCH_PARENT
+                }
+                AspectMode.RATIO_1_1,
+                AspectMode.RATIO_3_4,
+                AspectMode.RATIO_9_16 -> {
+                    val aspect = when (aspectMode) {
+                        AspectMode.RATIO_1_1 -> 1f / 1f
+                        AspectMode.RATIO_3_4 -> 3f / 4f
+                        AspectMode.RATIO_9_16 -> 9f / 16f
+                        else -> 1f
+                    }
+                    var w = pw
+                    var h = (w / aspect).toInt()
+                    if (h > ph) {
+                        h = ph
+                        w = (h * aspect).toInt()
+                    }
+                    lp.width = w
+                    lp.height = h
+                }
+            }
+            previewContainer.layoutParams = lp
+        }
+
+        previewContainer.requestLayout()
+    }
+
+
     // 센서가 허용하는 최대 디지털 줌 값(최소 1.0 보장)
     private fun maxZoom(): Float {
         if (!::chars.isInitialized) return 1f
@@ -566,7 +663,6 @@ class Camera2Controller(
         }
         return kotlin.math.max(1f, v)
     }
-
 
     // --- Shutter white flash overlay ---
     private fun playShutterFlash() {
@@ -636,7 +732,7 @@ class Camera2Controller(
             addTarget(previewSurface)
             set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_OFF)
             set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-            set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+            set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
             set(CaptureRequest.COLOR_CORRECTION_GAINS, gains)
 
             set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
@@ -648,7 +744,7 @@ class Camera2Controller(
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
 
             applyZoomOnly(this)
-            applyFlash(this, forPreview = true) // 수동 WB에서도 토치 등 유지
+            applyFlash(this, forPreview = true)
         } ?: return
         session?.setRepeatingRequest(req.build(), null, bgHandler)
         textureView.post { applyCenterCropTransform() }
