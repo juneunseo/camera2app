@@ -327,17 +327,54 @@ class Camera2Controller(
             cameraDevice = device
 
             imageReader?.close()
+
+            imageReader?.close()
+
+// --- 1) JPEG 지원 해상도 목록 읽기 ---
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
+            val jpegSizes = map.getOutputSizes(ImageFormat.JPEG)
+
+// 로그로 한 번 찍어보자 (Logcat에서 확인 가능)
+            jpegSizes.forEach {
+                Log.i("CAM", "JPEG size supported: ${it.width}x${it.height}")
+            }
+
+// --- 2) 목표: FHD 이상(2K급) 해상도 우선 선택 ---
+            val desiredLongSide = 2560   // 2K-ish (원하면 3000~4000으로 더 올려도 됨)
+
+// 긴 변 기준으로 2K 이상인 후보들
+            val bigCandidates = jpegSizes.filter { sz ->
+                val w = max(sz.width, sz.height)
+                w >= desiredLongSide
+            }
+
+// 우선순위:
+//  (a) 2K 이상 중에서 가장 작은 것 (지나치게 큰 8K 같은 건 피하려고)
+//  (b) 그런 게 없다면, 그냥 최대 해상도
+            val captureSize = if (bigCandidates.isNotEmpty()) {
+                bigCandidates.minBy { max(it.width, it.height) }
+            } else {
+                jpegSizes.maxBy { it.width.toLong() * it.height.toLong() }
+            }
+
+            Log.i("CAM", "Selected JPEG size: ${captureSize.width}x${captureSize.height}")
+
+// --- 3) 선택된 해상도로 ImageReader 생성 ---
             imageReader = android.media.ImageReader.newInstance(
-                previewSize.width, previewSize.height, ImageFormat.JPEG, 2
+                captureSize.width,
+                captureSize.height,
+                ImageFormat.JPEG,
+                2
             ).apply {
                 setOnImageAvailableListener({ r ->
                     val img = r.acquireNextImage() ?: return@setOnImageAvailableListener
-                    val buf: ByteBuffer = img.planes[0].buffer
+                    val buf = img.planes[0].buffer
                     val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
                     img.close()
                     onSaved(saveJpeg(bytes))
                 }, bgHandler)
             }
+
             startPreviewNormal()
         }
         override fun onDisconnected(device: CameraDevice) { device.close(); cameraDevice = null }
