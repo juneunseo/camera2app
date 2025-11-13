@@ -58,6 +58,7 @@ class MainActivity : AppCompatActivity() {
         controller = Camera2Controller(
             context = this,
             textureView = binding.textureView,
+            overlayView = binding.overlayView,
             onFrameLevelChanged = { /* no-op */ },
             onSaved = { /* no-op */ },
             previewContainer = binding.previewContainer,

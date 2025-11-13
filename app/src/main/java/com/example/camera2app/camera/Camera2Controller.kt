@@ -33,10 +33,16 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min   // ★ 추가
+import kotlin.math.min
+
+import android.graphics.RectF
+import com.example.camera2app.ui.OverlayView
+
+
 
 class Camera2Controller(
     private val context: Context,
+    private val overlayView: OverlayView,
     private val textureView: TextureView,
     private val onFrameLevelChanged: (rollDeg: Float) -> Unit,
     private val onSaved: (Uri) -> Unit,
@@ -147,7 +153,7 @@ class Camera2Controller(
             AspectMode.RATIO_3_4 -> AspectMode.RATIO_9_16
             AspectMode.RATIO_9_16 -> AspectMode.FULL
         }
-        updatePreviewContainerForAspect()  // ★ 컨테이너 비율 먼저 조정
+
         maybeSwitchPreviewAspect()
         updateRepeating()
         textureView.post { applyCenterCropTransform() }
@@ -157,7 +163,7 @@ class Camera2Controller(
     fun setAspectMode(mode: AspectMode) {
         if (aspectMode == mode) return
         aspectMode = mode
-        updatePreviewContainerForAspect()  // ★ 컨테이너 비율 먼저 조정
+
         maybeSwitchPreviewAspect()
         updateRepeating()
         textureView.post { applyCenterCropTransform() }
@@ -215,7 +221,7 @@ class Camera2Controller(
             applyCenterCropTransform()
         }
         if (textureView.isAvailable) {
-            updatePreviewContainerForAspect()   // ★ 재개 시 비율 적용
+
             openCamera(textureView.width, textureView.height)
         }
     }
@@ -232,7 +238,7 @@ class Camera2Controller(
         currentZoom = 1f
         val w = textureView.width; val h = textureView.height
         if (w > 0 && h > 0) {
-            updatePreviewContainerForAspect()
+
             openCamera(w, h)
         } else textureView.surfaceTextureListener = surfaceListener
     }
@@ -240,7 +246,7 @@ class Camera2Controller(
     // --- Surface listener / FPS ---
     private val surfaceListener = object : TextureView.SurfaceTextureListener {
         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-            updatePreviewContainerForAspect()
+
             openCamera(w, h)
         }
         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) =
@@ -443,12 +449,13 @@ class Camera2Controller(
      * 화면비(1:1 / 3:4 / 9:16 등)는 previewContainer의 레이아웃으로 맞추고,
      * 이 함수는 "카메라 버퍼를 컨테이너에 맞게 채우기/맞추기"만 담당.
      */
+
     fun applyCenterCropTransform() {
         val vw = textureView.width.toFloat()
         val vh = textureView.height.toFloat()
         if (vw <= 0f || vh <= 0f) return
 
-        // Camera buffer
+        // Camera buffer size
         val bw = previewSize.width.toFloat()
         val bh = previewSize.height.toFloat()
 
@@ -459,11 +466,16 @@ class Camera2Controller(
 
         val m = Matrix()
 
-        // --- 1) base crop (fullscreen center-crop) ---
+        // ---------------------------------------------------
+        // 1) 기본 CenterCrop (화면 꽉 채우기, 확대/축소만 담당)
+        // ---------------------------------------------------
         val baseScale = max(vw / bw, vh / bh)
         m.postScale(baseScale, baseScale, cx, cy)
 
-        // --- 2) apply aspect-ratio crop only (masking) ---
+        // ---------------------------------------------------
+        // 2) aspectRatio별 crop 적용 (스케일 변경 없음)
+        //    → 화면은 그대로, 잘리기만 함
+        // ---------------------------------------------------
         val targetAspect = when (aspectMode) {
             AspectMode.FULL -> vw / vh
             AspectMode.RATIO_1_1 -> 1f
@@ -471,19 +483,45 @@ class Camera2Controller(
             AspectMode.RATIO_9_16 -> 9f / 16f
         }
 
-        val viewAspect = vw / vh
-        if (viewAspect > targetAspect) {
-            // screen wider → crop horizontally
-            val scaleX = targetAspect / viewAspect
-            m.postScale(scaleX, 1f, cx, cy)
-        } else if (viewAspect < targetAspect) {
-            // screen taller → crop vertically
-            val scaleY = viewAspect / targetAspect
-            m.postScale(1f, scaleY, cx, cy)
-        }
+        val desiredHeight = vw / targetAspect
+        val desiredWidth = vh * targetAspect
 
+        val cropRect =
+            if (vw / vh > targetAspect) {
+                // 화면이 목표비보다 넓음 → 좌우 crop
+                android.graphics.RectF(
+                    (vw - desiredWidth) / 2f,
+                    0f,
+                    (vw + desiredWidth) / 2f,
+                    vh
+                )
+            } else {
+                // 화면이 목표비보다 좁음 → 상하 crop
+                android.graphics.RectF(
+                    0f,
+                    (vh - desiredHeight) / 2f,
+                    vw,
+                    (vh + desiredHeight) / 2f
+                )
+            }
+
+        // cropRect로 비율 마스킹 적용
+        m.setRectToRect(viewRect, cropRect, Matrix.ScaleToFit.FILL)
+
+        // 최종 변환 적용
         textureView.setTransform(m)
+
+
+        // ★★★  추가: 실제 렌더된 화면 영역을 OverlayView로 전달 ★★★
+        val actualRect = RectF(viewRect)
+        m.mapRect(actualRect)
+        overlayView.setVisibleRect(actualRect)
+        overlayView.invalidate()
+
     }
+
+
+
 
 
     // --- Size choices / ladder ---
@@ -573,90 +611,6 @@ class Camera2Controller(
 
     }
 
-    // ★ NEW: previewContainer의 레이아웃을 실제 비율에 맞게 조정
-    // ★ previewContainer의 레이아웃을 실제 비율에 맞게 조정 + 세로 중앙 정렬
-    private fun updatePreviewContainerForAspect() {
-        val parent = previewContainer.parent as? ViewGroup ?: return
-        val pw = parent.width
-        val ph = parent.height
-        if (pw == 0 || ph == 0) {
-            // 레이아웃 아직 안 잡혀있으면 나중에 다시 시도
-            previewContainer.post { updatePreviewContainerForAspect() }
-            return
-        }
-
-        val lp = previewContainer.layoutParams
-        if (lp is ViewGroup.MarginLayoutParams) {
-            when (aspectMode) {
-                AspectMode.FULL -> {
-                    lp.width = ViewGroup.LayoutParams.MATCH_PARENT
-                    lp.height = ViewGroup.LayoutParams.MATCH_PARENT
-                    lp.topMargin = 0
-                    lp.bottomMargin = 0
-                }
-                AspectMode.RATIO_1_1,
-                AspectMode.RATIO_3_4,
-                AspectMode.RATIO_9_16 -> {
-                    val aspect = when (aspectMode) {
-                        AspectMode.RATIO_1_1 -> 1f / 1f
-                        AspectMode.RATIO_3_4 -> 3f / 4f
-                        AspectMode.RATIO_9_16 -> 9f / 16f
-                        else -> 1f
-                    }
-
-                    // 부모 너비 기준으로 크기 계산
-                    var w = pw
-                    var h = (w / aspect).toInt()
-
-                    // 너무 길면 부모 높이에 맞추고 다시 너비 계산
-                    if (h > ph) {
-                        h = ph
-                        w = (h * aspect).toInt()
-                    }
-
-                    lp.width = w
-                    lp.height = h
-
-                    // ★ 세로 중앙 정렬: 위/아래 마진을 반반
-                    val remaining = ph - h
-                    val top = remaining / 2
-                    val bottom = remaining - top
-                    lp.topMargin = top.coerceAtLeast(0)
-                    lp.bottomMargin = bottom.coerceAtLeast(0)
-                }
-            }
-            previewContainer.layoutParams = lp
-        } else {
-            // MarginLayoutParams가 아닌 특이 케이스는 기존 로직만 유지
-            when (aspectMode) {
-                AspectMode.FULL -> {
-                    lp.width = ViewGroup.LayoutParams.MATCH_PARENT
-                    lp.height = ViewGroup.LayoutParams.MATCH_PARENT
-                }
-                AspectMode.RATIO_1_1,
-                AspectMode.RATIO_3_4,
-                AspectMode.RATIO_9_16 -> {
-                    val aspect = when (aspectMode) {
-                        AspectMode.RATIO_1_1 -> 1f / 1f
-                        AspectMode.RATIO_3_4 -> 3f / 4f
-                        AspectMode.RATIO_9_16 -> 9f / 16f
-                        else -> 1f
-                    }
-                    var w = pw
-                    var h = (w / aspect).toInt()
-                    if (h > ph) {
-                        h = ph
-                        w = (h * aspect).toInt()
-                    }
-                    lp.width = w
-                    lp.height = h
-                }
-            }
-            previewContainer.layoutParams = lp
-        }
-
-        previewContainer.requestLayout()
-    }
 
 
     // 센서가 허용하는 최대 디지털 줌 값(최소 1.0 보장)
