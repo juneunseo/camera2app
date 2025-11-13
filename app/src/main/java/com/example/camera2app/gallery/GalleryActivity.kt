@@ -60,11 +60,6 @@ class GalleryActivity : ComponentActivity() {
         }
 
         binding.btnClose.setOnClickListener { finish() }
-        binding.btnSettings.setOnClickListener { /* TODO: 설정 화면 */ }
-        binding.btnCamera.setOnClickListener {
-            startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA))
-        }
-
         ensurePermissionThenLoad()
     }
 

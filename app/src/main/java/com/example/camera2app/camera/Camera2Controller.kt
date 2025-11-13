@@ -39,8 +39,14 @@ import android.graphics.RectF
 import com.example.camera2app.ui.OverlayView
 
 
+// --- WB manual gains ---
+private var manualWbGains: RggbChannelVector? = null
+
+
 
 class Camera2Controller(
+
+
     private val context: Context,
     private val overlayView: OverlayView,
     private val textureView: TextureView,
@@ -215,6 +221,7 @@ class Camera2Controller(
     fun setAdaptiveResolutionEnabled(enabled: Boolean) { adaptiveResolutionEnabled = enabled }
 
     // Kelvin → RGGB gains (간단 근사)
+    // Kelvin → RGGB gains (간단 근사)
     fun setAwbTemperature(kelvin: Int) {
         val rGain = when {
             kelvin < 3500 -> 2.2f
@@ -235,9 +242,13 @@ class Camera2Controller(
         manualEnabled = true
         currentAwbMode = CameraMetadata.CONTROL_AWB_MODE_OFF
 
-        currentKelvin = kelvin          // 🔥 현재 WB Kelvin 저장
-        updateRepeatingWithGains(gains)
+        currentKelvin = kelvin
+        manualWbGains = gains   // 🔥 수동 WB 게인을 기억
+
+        // 이제 매번 updateRepeating()에서 이 게인을 다시 넣어 줄 것
+        updateRepeating()
     }
+
 
 
     // --- Lifecycle ---
@@ -440,13 +451,27 @@ class Camera2Controller(
     }
 
     // --- Color defaults ---
+    // --- Color defaults ---
+// 이름은 그대로 써도 되고, 헷갈리면 applyColor 정도로 바꿔도 됨
     private fun applyColorAuto(builder: CaptureRequest.Builder) {
-        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        builder.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
-        builder.set(CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
-        builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-        builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_FAST)
+        if (currentAwbMode == CameraMetadata.CONTROL_AWB_MODE_OFF && manualWbGains != null) {
+            // 🔥 수동 WB 유지
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+            builder.set(
+                CaptureRequest.COLOR_CORRECTION_MODE,
+                CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX
+            )
+            builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, manualWbGains)
+        } else {
+            // 🔁 평소 AUTO WB
+            builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            builder.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
+            builder.set(CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, currentAwbMode)
+            builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_FAST)
+        }
     }
+
 
     // --- Repeating update ---
     private fun updateRepeating() {
