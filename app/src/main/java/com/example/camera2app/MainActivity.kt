@@ -24,11 +24,16 @@ import com.example.camera2app.gallery.GalleryActivity
 import com.example.camera2app.util.Permissions
 import java.util.Locale
 import kotlin.math.abs
+import android.view.ScaleGestureDetector
+
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var controller: Camera2Controller
+
+    private lateinit var scaleDetector: ScaleGestureDetector
+
 
     // 오버레이 태그
     private val TAG_ISO = "overlayIso"
@@ -40,27 +45,29 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // ── FPS 라벨 (좌측 상단, 반투명 배경)
-        val fpsLp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.START
-        ).apply { setMargins(dp(12), dp(12), dp(12), dp(12)) }
-
-        // 상태바 인셋 반영
+        // ────────────────────────────────────────────────
+        // FPS 라벨 위치 조정 (상단 여백)
+        // ────────────────────────────────────────────────
         ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
-            val topInset = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
-            binding.topBar.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = topInset }
+            val status = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
+            binding.topBar.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                topMargin = status
+            }
+            binding.fpsText.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                topMargin = status + dp(8)
+            }
             insets
         }
 
-        // Camera2 컨트롤러 초기화
+        // ────────────────────────────────────────────────
+        // Camera2 Controller
+        // ────────────────────────────────────────────────
         controller = Camera2Controller(
             context = this,
             textureView = binding.textureView,
             overlayView = binding.overlayView,
-            onFrameLevelChanged = { /* no-op */ },
-            onSaved = { /* no-op */ },
+            onFrameLevelChanged = {},
+            onSaved = {},
             previewContainer = binding.previewContainer,
             onFpsChanged = { fps ->
                 runOnUiThread {
@@ -69,15 +76,9 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
-        // 상태바 인셋 다시 적용
-        ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
-            val topInset = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
-            binding.topBar.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = topInset }
-            binding.fpsText.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = topInset + dp(8) }
-            insets
-        }
-
-        // ▶ 화면비율 버튼
+        // ────────────────────────────────────────────────
+        // Aspect Ratio 버튼
+        // ────────────────────────────────────────────────
         binding.btnAspect.setOnClickListener {
             val mode = controller.cycleAspectMode()
             val label = when (mode) {
@@ -89,7 +90,9 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Aspect: $label", Toast.LENGTH_SHORT).show()
         }
 
-        // 🔦 플래시 버튼: OFF ↔ TORCH
+        // ────────────────────────────────────────────────
+        // 플래시 버튼 (OFF ↔ TORCH)
+        // ────────────────────────────────────────────────
         binding.btnFlash.setOnClickListener {
             val next = when (controller.getFlashMode()) {
                 Camera2Controller.FlashMode.OFF   -> Camera2Controller.FlashMode.TORCH
@@ -98,6 +101,25 @@ class MainActivity : AppCompatActivity() {
             }
             controller.setFlashMode(next)
             Toast.makeText(this, "Flash: ${flashLabel(next)}", Toast.LENGTH_SHORT).show()
+        }
+
+        // ────────────────────────────────────────────────
+        // 핀치 줌
+        // ────────────────────────────────────────────────
+        scaleDetector = ScaleGestureDetector(this,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val scale = detector.scaleFactor
+                    controller.onPinchScale(scale)
+                    return true
+                }
+            }
+        )
+
+        // TextureView에 터치로 핀치 전달
+        binding.textureView.setOnTouchListener { _, event ->
+            scaleDetector.onTouchEvent(event)
+            true
         }
 
         setupUi()

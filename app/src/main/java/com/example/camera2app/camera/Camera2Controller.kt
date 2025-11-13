@@ -189,6 +189,20 @@ class Camera2Controller(
     fun setAwbMode(mode: Int) { currentAwbMode = mode; updateRepeating() }
     fun setExposureCompensation(value: Int) { currentExp = value.coerceIn(expRange.lower, expRange.upper); updateRepeating() }
     fun setZoom(zoomX: Float) { currentZoom = zoomX.coerceIn(1f, maxZoom()); updateRepeating() }
+
+    // 핀치 제스처에서 scaleFactor를 받아서 줌 변경
+    fun onPinchScale(scaleFactor: Float) {
+        if (!::chars.isInitialized) return
+
+        // scaleFactor가 1 근처에서 살짝살짝 들어오기 때문에
+        // 현재 줌에 곱해주는 식으로 사용
+        val newZoom = (currentZoom * scaleFactor)
+            .coerceIn(1f, maxZoom())   // 최소 1x, 최대 카메라가 허용하는 디지털 줌
+
+        currentZoom = newZoom
+        updateRepeating()
+    }
+
     fun setMinIsoFloor(minIso: Int) {
         isoRange = Range(max(minIso, isoRange.lower), isoRange.upper)
         currentIso = currentIso.coerceIn(isoRange.lower, isoRange.upper)
@@ -242,6 +256,8 @@ class Camera2Controller(
             openCamera(w, h)
         } else textureView.surfaceTextureListener = surfaceListener
     }
+
+
 
     // --- Surface listener / FPS ---
     private val surfaceListener = object : TextureView.SurfaceTextureListener {
@@ -519,10 +535,6 @@ class Camera2Controller(
         overlayView.invalidate()
 
     }
-
-
-
-
 
     // --- Size choices / ladder ---
     private fun chooseBestPreviewSize(map: StreamConfigurationMap, viewAspect: Float): Size {
