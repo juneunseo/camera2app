@@ -96,6 +96,9 @@ class Camera2Controller(
     private val MAX_W = 1920
     private val MAX_H = 1080
 
+
+    private var currentKelvin: Int = 4400
+
     private fun isAtMostFhd(sz: Size): Boolean {
         val w = max(sz.width, sz.height)
         val h = min(sz.width, sz.height)
@@ -214,18 +217,28 @@ class Camera2Controller(
     // Kelvin → RGGB gains (간단 근사)
     fun setAwbTemperature(kelvin: Int) {
         val rGain = when {
-            kelvin < 3500 -> 2.2f; kelvin < 4500 -> 1.8f; kelvin < 5500 -> 1.5f; kelvin < 6500 -> 1.3f
+            kelvin < 3500 -> 2.2f
+            kelvin < 4500 -> 1.8f
+            kelvin < 5500 -> 1.5f
+            kelvin < 6500 -> 1.3f
             else -> 1.1f
         }
         val bGain = when {
-            kelvin < 3500 -> 1.1f; kelvin < 4500 -> 1.3f; kelvin < 5500 -> 1.5f; kelvin < 6500 -> 1.8f
+            kelvin < 3500 -> 1.1f
+            kelvin < 4500 -> 1.3f
+            kelvin < 5500 -> 1.5f
+            kelvin < 6500 -> 1.8f
             else -> 2.2f
         }
         val gains = RggbChannelVector(rGain, 1.0f, 1.0f, bGain)
+
         manualEnabled = true
         currentAwbMode = CameraMetadata.CONTROL_AWB_MODE_OFF
+
+        currentKelvin = kelvin          // 🔥 현재 WB Kelvin 저장
         updateRepeatingWithGains(gains)
     }
+
 
     // --- Lifecycle ---
     fun onResume() {
@@ -769,4 +782,11 @@ class Camera2Controller(
             Log.i("CAM", "Preview size supported: ${it.width}x${it.height}")
         }
     }
+
+    fun getAppliedExposureNs(): Long = currentExposureNs
+    fun getCurrentIso(): Int = currentIso
+    fun getCurrentKelvin(): Int = currentKelvin
+
+
+
 }
