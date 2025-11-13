@@ -375,11 +375,30 @@ class Camera2Controller(
 // 우선순위:
 //  (a) 2K 이상 중에서 가장 작은 것 (지나치게 큰 8K 같은 건 피하려고)
 //  (b) 그런 게 없다면, 그냥 최대 해상도
-            val captureSize = if (bigCandidates.isNotEmpty()) {
-                bigCandidates.minBy { max(it.width, it.height) }
+            // FULL 기본 비율 (JPEG 최대 해상도 기준)
+            val defaultAspect = if (jpegSizes.isNotEmpty()) {
+                val maxJpeg = jpegSizes.maxBy { it.width.toLong() * it.height.toLong() }
+                maxJpeg.width.toFloat() / maxJpeg.height.toFloat()
             } else {
-                jpegSizes.maxBy { it.width.toLong() * it.height.toLong() }
+                4f / 3f
             }
+
+
+            // 모드별 Aspect Ratio
+            val targetAspect = when (aspectMode) {
+                AspectMode.RATIO_1_1 -> 1f
+                AspectMode.RATIO_3_4 -> 3f / 4f
+                AspectMode.RATIO_9_16 -> 9f / 16f
+                AspectMode.FULL -> defaultAspect
+
+            }
+
+// targetAspect와 가장 맞는 JPEG 사이즈 선택
+            val captureSize = jpegSizes.minBy { sz ->
+                val a = sz.width.toFloat() / sz.height.toFloat()
+                kotlin.math.abs(a - targetAspect)
+            }
+
 
             Log.i("CAM", "Selected JPEG size: ${captureSize.width}x${captureSize.height}")
 
@@ -695,8 +714,24 @@ class Camera2Controller(
     }
 
     private fun maybeSwitchPreviewAspect() {
+        if (!::chars.isInitialized) return
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
 
+        val aspect = when (aspectMode) {
+            AspectMode.RATIO_1_1 -> 1f
+            AspectMode.RATIO_3_4 -> 3f / 4f
+            AspectMode.RATIO_9_16 -> 9f / 16f
+            AspectMode.FULL -> previewContainer.width.toFloat() / previewContainer.height.toFloat()
+        }
+
+        val newSize = pickSizeForAspect(map, aspect)
+
+        if (newSize != previewSize) {
+            switchPreviewSize(newSize)   // 🔥 여기서 프리뷰 해상도 변경 → 해결
+        }
     }
+
+
 
 
 
