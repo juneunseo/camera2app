@@ -26,12 +26,17 @@ import com.example.camera2app.databinding.ItemPhotoBinding
 class GalleryActivity : ComponentActivity() {
 
     private lateinit var binding: ActivityGalleryBinding
+
+    // 갤러리 사진들 URI 리스트
     private val photos = mutableListOf<Uri>()
+
+    // 상단 무드보드 헤더
     private val headers = listOf(
         MoodCard("추천 스타일", null),
         MoodCard("나의 무드보드", null)
     )
 
+    // 권한 요청 런처
     private val requestPerm = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { loadMediaIfGranted() }
@@ -41,28 +46,43 @@ class GalleryActivity : ComponentActivity() {
         binding = ActivityGalleryBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 헤더: 수평 리스트
+        // ─────────────────────
+        // 헤더: 수평 무드보드 리스트
+        // ─────────────────────
         binding.headerList.apply {
             layoutManager = LinearLayoutManager(
-                this@GalleryActivity, LinearLayoutManager.HORIZONTAL, false
+                this@GalleryActivity,
+                LinearLayoutManager.HORIZONTAL,
+                false
             )
             adapter = MoodAdapter(headers)
         }
 
-        // 그리드: 3열
+        // ─────────────────────
+        // 사진 그리드: 3열
+        // ─────────────────────
         binding.photoGrid.apply {
             layoutManager = GridLayoutManager(this@GalleryActivity, 3)
             adapter = PhotoAdapter(photos) { uri ->
-                setResult(RESULT_OK, Intent().setData(uri))
-                finish()
+                // 사진 클릭 → 우리 PreviewActivity 로 이동
+                val intent = Intent(this@GalleryActivity, PreviewActivity::class.java)
+                intent.putExtra(PreviewActivity.EXTRA_IMAGE_URI, uri.toString())
+                startActivity(intent)
             }
+            // 사진 사이 간격
             addItemDecoration(GridSpacing(3, dp(2), includeEdge = false))
         }
 
+        // 닫기 버튼
         binding.btnClose.setOnClickListener { finish() }
+
+        // 권한 확인 후 로딩
         ensurePermissionThenLoad()
     }
 
+    // ─────────────────────
+    // 권한 체크 및 요청
+    // ─────────────────────
     private fun ensurePermissionThenLoad() {
         val perms = if (Build.VERSION.SDK_INT >= 33)
             arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
@@ -70,21 +90,35 @@ class GalleryActivity : ComponentActivity() {
             arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
 
         val granted = perms.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(this, it) ==
+                    PackageManager.PERMISSION_GRANTED
         }
-        if (granted) loadPhotos() else requestPerm.launch(perms)
+
+        if (granted) {
+            loadPhotos()
+        } else {
+            requestPerm.launch(perms)
+        }
     }
 
     private fun loadMediaIfGranted() {
         val ok = if (Build.VERSION.SDK_INT >= 33)
-            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) ==
-                    PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.READ_MEDIA_IMAGES
+            ) == PackageManager.PERMISSION_GRANTED
         else
-            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) ==
-                    PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+
         if (ok) loadPhotos()
     }
 
+    // ─────────────────────
+    // MediaStore 에서 사진 불러오기
+    // ─────────────────────
     private fun loadPhotos() {
         photos.clear()
 
@@ -103,7 +137,8 @@ class GalleryActivity : ComponentActivity() {
             val idIdx = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             while (c.moveToNext()) {
                 val id = c.getLong(idIdx)
-                photos += ContentUris.withAppendedId(collection, id)
+                val uri = ContentUris.withAppendedId(collection, id)
+                photos += uri
             }
         }
 
@@ -111,38 +146,49 @@ class GalleryActivity : ComponentActivity() {
         binding.headerList.visibility = View.VISIBLE
     }
 
-    // --- 작은 유틸 ---
-    private fun dp(v: Int) = (resources.displayMetrics.density * v + 0.5f).toInt()
+    // dp → px 변환
+    private fun dp(v: Int) =
+        (resources.displayMetrics.density * v + 0.5f).toInt()
 
-    // --- 데이터 ---
+    // ─────────────────────
+    // 데이터 클래스
+    // ─────────────────────
     data class MoodCard(val title: String, val image: Uri?)
 
-    // --- 어댑터들 ---
+    // ─────────────────────
+    // 어댑터 & 뷰홀더들
+    // ─────────────────────
     class MoodAdapter(private val items: List<MoodCard>) :
         RecyclerView.Adapter<MoodVH>() {
+
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MoodVH {
             val b = ItemMoodboardBinding.inflate(
-                LayoutInflater.from(parent.context), parent, false
+                LayoutInflater.from(parent.context),
+                parent,
+                false
             )
             return MoodVH(b)
         }
-        override fun onBindViewHolder(holder: MoodVH, position: Int) =
+
+        override fun onBindViewHolder(holder: MoodVH, position: Int) {
             holder.bind(items[position])
+        }
+
         override fun getItemCount() = items.size
     }
 
     class MoodVH(private val b: ItemMoodboardBinding) :
         RecyclerView.ViewHolder(b.root) {
+
         fun bind(m: MoodCard) {
             b.title.text = m.title
             if (m.image != null) {
-                // ✔ 필요 시 헤더 카드의 미리보기 이미지 로드
                 Glide.with(b.cover)
                     .load(m.image)
                     .centerCrop()
                     .into(b.cover)
             } else {
-                // 이미지 없으면 기본 상태 유지 (아이콘/그라데이션 등 레이아웃에 설정)
+                // 기본 상태 (레이아웃에 설정된 더미 이미지/배경 사용)
                 b.cover.setImageDrawable(null)
             }
         }
@@ -152,21 +198,27 @@ class GalleryActivity : ComponentActivity() {
         private val data: List<Uri>,
         private val onClick: (Uri) -> Unit
     ) : RecyclerView.Adapter<PhotoVH>() {
+
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PhotoVH {
             val b = ItemPhotoBinding.inflate(
-                LayoutInflater.from(parent.context), parent, false
+                LayoutInflater.from(parent.context),
+                parent,
+                false
             )
             return PhotoVH(b)
         }
-        override fun onBindViewHolder(holder: PhotoVH, position: Int) =
+
+        override fun onBindViewHolder(holder: PhotoVH, position: Int) {
             holder.bind(data[position], onClick)
+        }
+
         override fun getItemCount() = data.size
     }
 
     class PhotoVH(private val b: ItemPhotoBinding) :
         RecyclerView.ViewHolder(b.root) {
+
         fun bind(uri: Uri, onClick: (Uri) -> Unit) {
-            // ✅ 바로 여기! 썸네일 로드
             Glide.with(b.thumb)
                 .load(uri)
                 .centerCrop()
@@ -176,12 +228,15 @@ class GalleryActivity : ComponentActivity() {
         }
     }
 
-    /** 간단한 그리드 간격 */
+    // ─────────────────────
+    // 그리드 아이템 간격
+    // ─────────────────────
     class GridSpacing(
         private val spanCount: Int,
         private val spacingPx: Int,
         private val includeEdge: Boolean
     ) : RecyclerView.ItemDecoration() {
+
         override fun getItemOffsets(
             outRect: Rect,
             view: View,
@@ -190,6 +245,7 @@ class GalleryActivity : ComponentActivity() {
         ) {
             val pos = parent.getChildAdapterPosition(view)
             val col = pos % spanCount
+
             if (includeEdge) {
                 outRect.left = spacingPx - col * spacingPx / spanCount
                 outRect.right = (col + 1) * spacingPx / spanCount
