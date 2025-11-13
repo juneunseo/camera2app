@@ -446,35 +446,45 @@ class Camera2Controller(
     fun applyCenterCropTransform() {
         val vw = textureView.width.toFloat()
         val vh = textureView.height.toFloat()
-        if (vw <= 0f || vh <= 0f || previewSize.width <= 0 || previewSize.height <= 0) return
+        if (vw <= 0f || vh <= 0f) return
 
-        val rotation = textureView.display?.rotation ?: Surface.ROTATION_0
-        val bufW = if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270)
-            previewSize.height.toFloat() else previewSize.width.toFloat()
-        val bufH = if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270)
-            previewSize.width.toFloat() else previewSize.height.toFloat()
+        // Camera buffer
+        val bw = previewSize.width.toFloat()
+        val bh = previewSize.height.toFloat()
 
         val viewRect = android.graphics.RectF(0f, 0f, vw, vh)
-        val bufferRect = android.graphics.RectF(0f, 0f, bufW, bufH)
+        val bufferRect = android.graphics.RectF(0f, 0f, bw, bh)
         val cx = viewRect.centerX()
         val cy = viewRect.centerY()
 
-        bufferRect.offset(cx - bufferRect.centerX(), cy - bufferRect.centerY())
-
         val m = Matrix()
-        m.setRectToRect(bufferRect, viewRect, Matrix.ScaleToFit.CENTER)
 
-        // ★ 균일 스케일만 사용 (비율 왜곡 없음)
-        val scale = if (fillPreview) max(vh / bufH, vw / bufW) else min(vh / bufH, vw / bufW)
-        m.postScale(scale, scale, cx, cy)
+        // --- 1) base crop (fullscreen center-crop) ---
+        val baseScale = max(vw / bw, vh / bh)
+        m.postScale(baseScale, baseScale, cx, cy)
 
-        when (rotation) {
-            Surface.ROTATION_90 -> m.postRotate(90f, cx, cy)
-            Surface.ROTATION_180 -> m.postRotate(180f, cx, cy)
-            Surface.ROTATION_270 -> m.postRotate(270f, cx, cy)
+        // --- 2) apply aspect-ratio crop only (masking) ---
+        val targetAspect = when (aspectMode) {
+            AspectMode.FULL -> vw / vh
+            AspectMode.RATIO_1_1 -> 1f
+            AspectMode.RATIO_3_4 -> 3f / 4f
+            AspectMode.RATIO_9_16 -> 9f / 16f
         }
+
+        val viewAspect = vw / vh
+        if (viewAspect > targetAspect) {
+            // screen wider → crop horizontally
+            val scaleX = targetAspect / viewAspect
+            m.postScale(scaleX, 1f, cx, cy)
+        } else if (viewAspect < targetAspect) {
+            // screen taller → crop vertically
+            val scaleY = viewAspect / targetAspect
+            m.postScale(1f, scaleY, cx, cy)
+        }
+
         textureView.setTransform(m)
     }
+
 
     // --- Size choices / ladder ---
     private fun chooseBestPreviewSize(map: StreamConfigurationMap, viewAspect: Float): Size {
@@ -491,21 +501,25 @@ class Camera2Controller(
     }
 
     private fun buildSizeLadder(map: StreamConfigurationMap, viewAspect: Float) {
-        val sizesAll = map.getOutputSizes(SurfaceTexture::class.java)?.toList().orEmpty()
+        // 1. 가능한 모든 프리뷰 사이즈 (FHD 이하) 모으기
+        val sizesAll = map.getOutputSizes(SurfaceTexture::class.java)
+            ?.toList()
+            .orEmpty()
             .filter { it.width > 0 && it.height > 0 }
-            .filter { isAtMostFhd(it) }
+            .filter { isAtMostFhd(it) }   // MAX_W / MAX_H 안에서만
 
-        val tol = 0.03f
-        val candidates = sizesAll
-            .filter { abs(it.width / it.height.toFloat() - viewAspect) <= tol }
-            .ifEmpty { sizesAll }
-
-        val fhd = candidates.firstOrNull {
-            (it.width == 1920 && it.height == 1080) || (it.width == 1080 && it.height == 1920)
+        // 2. 화면 비율은 신경 쓰지 않고,
+        //    "센서에서 가장 넓은 FOV"를 주는 큰 해상도 순서대로 정렬
+        sizeLadder = if (sizesAll.isNotEmpty()) {
+            sizesAll.sortedByDescending { it.width.toLong() * it.height.toLong() }
+        } else {
+            emptyList()
         }
-        sizeLadder = if (fhd != null) listOf(fhd) else candidates.sortedByDescending { it.width * it.height }
+
+        // 항상 제일 큰 해상도부터 시작
         sizeIndex = 0
     }
+
 
     private fun maybeAdaptResolutionForFps() {
         if (!adaptiveResolutionEnabled) return
@@ -556,15 +570,7 @@ class Camera2Controller(
     }
 
     private fun maybeSwitchPreviewAspect() {
-        if (!::chars.isInitialized) return
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
-        val target = targetAspectValue()
-        val newSize = pickSizeForAspect(map, target)
-        val curAspect = previewSize.width / previewSize.height.toFloat()
-        val diff = abs(curAspect - (newSize.width / newSize.height.toFloat()))
-        if (diff > 0.01f || (newSize.width != previewSize.width || newSize.height != previewSize.height)) {
-            switchPreviewSize(newSize)
-        }
+
     }
 
     // ★ NEW: previewContainer의 레이아웃을 실제 비율에 맞게 조정
