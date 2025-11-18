@@ -300,10 +300,13 @@ class Camera2Controller(
         sensorArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)!!
 
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
-        val viewAspect = if (w > 0 && h > 0) w.toFloat() / h else 9f / 16f
 
-        buildSizeLadder(map)
-        previewSize = sizeLadder.firstOrNull() ?: choosePreviewSize(map, viewAspect)
+        // 현재 aspectMode(1:1, 3:4, 9:16, FULL)에 맞는 preset 해상도 하나 정함
+        val desiredPreview = fixedPreviewSizeFor(aspectMode)
+
+        // 실제 디바이스가 지원하는 사이즈 중에서 가장 가까운 해상도 선택
+        previewSize = nearestSupportedPreviewSize(desiredPreview, map)
+
 
         expRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0)
 
@@ -560,28 +563,16 @@ class Camera2Controller(
     // =========================================================================================
     // Sensor crop for preview and capture
     // =========================================================================================
+    // 🔁 센서에서는 "줌만" 적용하고, 비율은 건드리지 않는다.
     private fun applyZoomAndAspect(builder: CaptureRequest.Builder) {
         if (!::sensorArray.isInitialized) return
 
         val base = sensorArray
-        val zoom = currentZoom
+        val zoom = currentZoom.coerceAtLeast(1f)
 
-        var cropW = (base.width() / zoom).toInt()
-        var cropH = (base.height() / zoom).toInt()
-
-        val targetAspect = when (aspectMode) {
-            AspectMode.RATIO_1_1 -> 1f
-            AspectMode.RATIO_3_4 -> 3f / 4f
-            AspectMode.RATIO_9_16 -> 9f / 16f
-            AspectMode.FULL -> base.width().toFloat() / base.height()
-        }
-
-        val currentAspect = cropW.toFloat() / cropH
-
-        if (currentAspect > targetAspect)
-            cropW = (cropH * targetAspect).toInt()
-        else
-            cropH = (cropW / targetAspect).toInt()
+        // 줌에 따른 센서 크롭만 계산
+        val cropW = (base.width() / zoom).toInt()
+        val cropH = (base.height() / zoom).toInt()
 
         val cx = base.centerX()
         val cy = base.centerY()
@@ -592,6 +583,8 @@ class Camera2Controller(
         val rect = Rect(left, top, left + cropW, top + cropH)
         builder.set(CaptureRequest.SCALER_CROP_REGION, rect)
     }
+
+
 
     // =========================================================================================
     // Preview transform (CENTER CROP)
@@ -643,16 +636,36 @@ class Camera2Controller(
     // =========================================================================================
     // Size selection
     // =========================================================================================
-    private fun choosePreviewSize(map: StreamConfigurationMap, viewAspect: Float): Size {
-        val all = map.getOutputSizes(SurfaceTexture::class.java).toList()
-        val candidates = all.filter { it.width <= MAX_W && it.height <= MAX_H }
-
-        val tol = 0.03f
-        val exact = candidates.filter { abs(it.width / it.height.toFloat() - viewAspect) <= tol }
-        if (exact.isNotEmpty()) return exact.maxBy { it.width * it.height }
-
-        return candidates.minBy { abs(it.width / it.height.toFloat() - viewAspect) }
+    // 내가 원하는 비율에 맞는 "목표" 해상도 (preset)
+    private fun fixedPreviewSizeFor(mode: AspectMode): Size {
+        return when (mode) {
+            AspectMode.RATIO_1_1  -> Size(1440, 1440)   // 1:1
+            AspectMode.RATIO_3_4  -> Size(1440, 1920)   // 3:4
+            AspectMode.RATIO_9_16 -> Size(1440, 2336)   // 9:16
+            AspectMode.FULL       -> Size(1440, 2336)   // FULL (20:9 정도)
+        }
     }
+
+    // 위 preset과 가장 가까운, 실제 "지원되는" 프리뷰 사이즈를 선택
+    private fun nearestSupportedPreviewSize(
+        desired: Size,
+        map: StreamConfigurationMap
+    ): Size {
+        val all = map.getOutputSizes(SurfaceTexture::class.java)
+            .filter { it.width <= MAX_W && it.height <= MAX_H }
+
+        // 혹시라도 필터 후 비어 있으면 그냥 첫 번째 사용
+        if (all.isEmpty()) return map.getOutputSizes(SurfaceTexture::class.java).first()
+
+        return all.minBy { s ->
+            val dw = (s.width - desired.width).toDouble()
+            val dh = (s.height - desired.height).toDouble()
+            dw * dw + dh * dh          // (Δw² + Δh²) 제곱거리 기준
+        }
+    }
+
+
+
 
     private fun buildSizeLadder(map: StreamConfigurationMap) {
         val all = map.getOutputSizes(SurfaceTexture::class.java)
