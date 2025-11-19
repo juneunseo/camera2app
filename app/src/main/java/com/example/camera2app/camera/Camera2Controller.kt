@@ -47,11 +47,13 @@ class Camera2Controller(
     private val onFpsChanged: (Double) -> Unit = {}
 ) {
 
+    private val TAG = "Camera2Controller"
+
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private var cameraDevice: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var imageReader: ImageReader? = null
-    private var previewSize: Size = Size(1920,1080)
+    private var previewSize: Size = Size(1920, 1080)
 
     private var bgThread: HandlerThread? = null
     private var bgHandler: Handler? = null
@@ -69,7 +71,7 @@ class Camera2Controller(
     private var currentExposureNs = 3_000_000L
     private var currentAwbMode = CameraMetadata.CONTROL_AWB_MODE_AUTO
     private var currentZoom = 1f
-    private var expRange: Range<Int> = Range(0,0)
+    private var expRange: Range<Int> = Range(0, 0)
     private var currentExp = 0
 
     // FPS
@@ -139,7 +141,9 @@ class Camera2Controller(
         }
     }
 
-    // aspect control
+    // =========================================================================================
+    // Aspect control
+    // =========================================================================================
     fun cycleAspectMode(): AspectMode {
         aspectMode = when (aspectMode) {
             AspectMode.FULL -> AspectMode.RATIO_1_1
@@ -147,6 +151,8 @@ class Camera2Controller(
             AspectMode.RATIO_3_4 -> AspectMode.RATIO_9_16
             AspectMode.RATIO_9_16 -> AspectMode.FULL
         }
+        Log.d(TAG, "cycleAspectMode -> $aspectMode")
+
         maybeSwitchPreviewAspect()
         updateRepeating()
         textureView.post { applyCenterCropTransform() }
@@ -155,12 +161,15 @@ class Camera2Controller(
 
     fun setAspectMode(m: AspectMode) {
         aspectMode = m
+        Log.d(TAG, "setAspectMode -> $aspectMode")
         maybeSwitchPreviewAspect()
         updateRepeating()
         textureView.post { applyCenterCropTransform() }
     }
 
+    // =========================================================================================
     // Manual switches
+    // =========================================================================================
     fun setManualEnabled(b: Boolean) { manualEnabled = b; updateRepeating() }
 
     fun setTargetFps(fps: Int) {
@@ -291,7 +300,8 @@ class Camera2Controller(
     @SuppressLint("MissingPermission")
     private fun openCamera(w: Int, h: Int) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED) return
+            != PackageManager.PERMISSION_GRANTED
+        ) return
 
         cameraId = findCameraId(lensFacing)
         cameraDevice = null
@@ -307,6 +317,7 @@ class Camera2Controller(
         // 실제 디바이스가 지원하는 사이즈 중에서 가장 가까운 해상도 선택
         previewSize = nearestSupportedPreviewSize(desiredPreview, map)
 
+        Log.d(TAG, "openCamera: aspect=$aspectMode, previewSize=$previewSize")
 
         expRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0)
 
@@ -359,13 +370,23 @@ class Camera2Controller(
             AspectMode.RATIO_1_1 -> 1f
             AspectMode.RATIO_3_4 -> 3f / 4f
             AspectMode.RATIO_9_16 -> 9f / 16f
-            AspectMode.FULL -> 20f / 9f
+            AspectMode.FULL -> {
+                val w = previewContainer.width.toFloat()
+                val h = previewContainer.height.toFloat()
+                if (w > 0f && h > 0f) {
+                    w / h
+                } else {
+                    sensorAspect
+                }
+            }
         }
 
         val captureSize = jpegSizes.minBy {
             val a = it.width.toFloat() / it.height
             abs(a - targetAspect)
         }
+
+        Log.d(TAG, "setupImageReader: aspect=$aspectMode, targetAspect=$targetAspect, captureSize=$captureSize")
 
         imageReader?.close()
         imageReader = ImageReader.newInstance(
@@ -408,6 +429,12 @@ class Camera2Controller(
             val left = (w - cropW) / 2
             val top = (h - cropH) / 2
 
+            Log.d(
+                TAG,
+                "onImageAvailable: mode=$aspectMode, rotated=${w}x$h, currentAspect=$currentAspect, " +
+                        "targetAspect=$aspect, crop=${cropW}x$cropH"
+            )
+
             val cropped = Bitmap.createBitmap(rotated, left, top, cropW, cropH)
 
             val out = ByteArrayOutputStream()
@@ -417,6 +444,7 @@ class Camera2Controller(
             onSaved(saveJpeg(finalBytes))
         }, bgHandler)
     }
+
     // =========================================================================================
     // Preview start
     // =========================================================================================
@@ -478,7 +506,6 @@ class Camera2Controller(
             .start()
     }
 
-
     fun takePicture() {
         playShutterFlash()
 
@@ -512,14 +539,18 @@ class Camera2Controller(
     private fun applyColorAuto(builder: CaptureRequest.Builder) {
         if (currentAwbMode == CameraMetadata.CONTROL_AWB_MODE_OFF && manualWbGains != null) {
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-            builder.set(CaptureRequest.COLOR_CORRECTION_MODE,
+            builder.set(
+                CaptureRequest.COLOR_CORRECTION_MODE,
                 CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX
             )
             builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, manualWbGains)
         } else {
             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AWB_MODE, currentAwbMode)
-            builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_FAST)
+            builder.set(
+                CaptureRequest.COLOR_CORRECTION_MODE,
+                CaptureRequest.COLOR_CORRECTION_MODE_FAST
+            )
         }
     }
 
@@ -537,24 +568,38 @@ class Camera2Controller(
             builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, safeExp)
             builder.set(CaptureRequest.SENSOR_SENSITIVITY, currentIso)
 
-            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(targetFps, targetFps))
-            builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
+            builder.set(
+                CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                Range(targetFps, targetFps)
+            )
+            builder.set(
+                CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
                 CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ
             )
-            builder.set(CaptureRequest.CONTROL_AF_MODE,
+            builder.set(
+                CaptureRequest.CONTROL_AF_MODE,
                 CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
             )
 
             if (preview) {
-                builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
+                builder.set(
+                    CaptureRequest.NOISE_REDUCTION_MODE,
+                    CaptureRequest.NOISE_REDUCTION_MODE_FAST
+                )
                 builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
             }
         } else {
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            builder.set(
+                CaptureRequest.CONTROL_AF_MODE,
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+            )
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentExp)
-            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(targetFps, targetFps))
+            builder.set(
+                CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                Range(targetFps, targetFps)
+            )
         }
 
         applyZoomAndAspect(builder)
@@ -584,8 +629,6 @@ class Camera2Controller(
         builder.set(CaptureRequest.SCALER_CROP_REGION, rect)
     }
 
-
-
     // =========================================================================================
     // Preview transform (CENTER CROP)
     // =========================================================================================
@@ -598,13 +641,11 @@ class Camera2Controller(
         val bh = previewSize.height.toFloat()
 
         val viewRect = RectF(0f, 0f, vw, vh)
-        val bufferRect = RectF(0f, 0f, bw, bh)
         val cx = viewRect.centerX()
         val cy = viewRect.centerY()
 
-        val m = Matrix()
+        // (필요시 사용할 수 있는 스케일, 현재는 setRectToRect로 대체)
         val scale = max(vw / bw, vh / bh)
-        m.postScale(scale, scale, cx, cy)
 
         // Aspect ratio crop mask
         val targetAspect = when (aspectMode) {
@@ -624,6 +665,7 @@ class Camera2Controller(
                 RectF(0f, (vh - desiredH) / 2f, vw, (vh + desiredH) / 2f)
             }
 
+        val m = Matrix()
         m.setRectToRect(viewRect, cropRect, Matrix.ScaleToFit.FILL)
         textureView.setTransform(m)
 
@@ -639,10 +681,10 @@ class Camera2Controller(
     // 내가 원하는 비율에 맞는 "목표" 해상도 (preset)
     private fun fixedPreviewSizeFor(mode: AspectMode): Size {
         return when (mode) {
-            AspectMode.RATIO_1_1  -> Size(1440, 1440)   // 1:1
-            AspectMode.RATIO_3_4  -> Size(1440, 1920)   // 3:4
-            AspectMode.RATIO_9_16 -> Size(1440, 2336)   // 9:16
-            AspectMode.FULL       -> Size(1440, 2336)   // FULL (20:9 정도)
+            AspectMode.RATIO_1_1 -> Size(1440, 1440)   // 1:1
+            AspectMode.RATIO_3_4 -> Size(1440, 1920)   // 3:4  (0.75)
+            AspectMode.RATIO_9_16 -> Size(1440, 2560)  // 9:16 (0.5625)
+            AspectMode.FULL -> Size(1440, 3200)        // ≈ 9:20 (0.45)
         }
     }
 
@@ -660,12 +702,9 @@ class Camera2Controller(
         return all.minBy { s ->
             val dw = (s.width - desired.width).toDouble()
             val dh = (s.height - desired.height).toDouble()
-            dw * dw + dh * dh          // (Δw² + Δh²) 제곱거리 기준
+            dw * dw + dh * dh
         }
     }
-
-
-
 
     private fun buildSizeLadder(map: StreamConfigurationMap) {
         val all = map.getOutputSizes(SurfaceTexture::class.java)
@@ -772,6 +811,7 @@ class Camera2Controller(
         val maxZ = chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
         return max(1f, maxZ)
     }
+
     private fun updateRepeating() {
         val device = cameraDevice ?: return
         val st = textureView.surfaceTexture ?: return
@@ -791,8 +831,8 @@ class Camera2Controller(
     }
 
     // -------------------------------
-// 🔄 전·후면 카메라 전환
-// -------------------------------
+    // 🔄 전·후면 카메라 전환
+    // -------------------------------
     fun switchCamera() {
         lensFacing =
             if (lensFacing == CameraCharacteristics.LENS_FACING_BACK)
@@ -812,6 +852,4 @@ class Camera2Controller(
             textureView.surfaceTextureListener = surfaceListener
         }
     }
-
-
 }
