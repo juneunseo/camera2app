@@ -370,15 +370,7 @@ class Camera2Controller(
             AspectMode.RATIO_1_1 -> 1f
             AspectMode.RATIO_3_4 -> 3f / 4f
             AspectMode.RATIO_9_16 -> 9f / 16f
-            AspectMode.FULL -> {
-                val w = previewContainer.width.toFloat()
-                val h = previewContainer.height.toFloat()
-                if (w > 0f && h > 0f) {
-                    w / h
-                } else {
-                    sensorAspect
-                }
-            }
+            AspectMode.FULL -> 9f / 20f   // ★ FULL = 20:9 고정
         }
 
         val captureSize = jpegSizes.minBy {
@@ -411,7 +403,7 @@ class Camera2Controller(
                 AspectMode.RATIO_1_1 -> 1f
                 AspectMode.RATIO_3_4 -> 3f / 4f
                 AspectMode.RATIO_9_16 -> 9f / 16f
-                AspectMode.FULL -> rotated.width.toFloat() / rotated.height
+                AspectMode.FULL -> 9f / 20f   // ★ FULL = 20:9 고정
             }
 
             val w = rotated.width
