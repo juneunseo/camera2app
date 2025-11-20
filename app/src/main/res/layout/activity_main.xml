@@ -138,6 +138,15 @@
         android:contentDescription="White Balance"
         app:srcCompat="@drawable/ic_white_balance" />
 
+        <TextView
+            android:id="@+id/btnAutoAll"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:padding="12dp"
+            android:text="AUTO"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"/>
+
         <View
             android:layout_width="0dp"
             android:layout_height="1dp"
@@ -200,4 +209,7 @@ android:background="#FFFFFF"
 android:alpha="0"
 android:clickable="false" />
 
-    </FrameLayout>
+
+
+
+</FrameLayout>

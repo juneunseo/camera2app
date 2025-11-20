@@ -9,12 +9,7 @@ import android.view.Gravity
 import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewGroup
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.SeekBar
-import android.widget.Space
-import android.widget.TextView
-import android.widget.Toast
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -30,12 +25,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var controller: Camera2Controller
     private lateinit var scaleDetector: ScaleGestureDetector
+    private lateinit var rootFrame: FrameLayout
 
     private val TAG_ISO = "overlayIso"
     private val TAG_SHT = "overlayShutter"
-    private val TAG_WB = "overlayWb"
+    private val TAG_EV  = "overlayEv"   // (WB → EV로 변경)
 
-    private lateinit var rootFrame: FrameLayout
+    private var isAllAuto = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,6 +40,19 @@ class MainActivity : AppCompatActivity() {
 
         rootFrame = findViewById(android.R.id.content) as FrameLayout
 
+        applyWindowInset()
+        initCameraController()
+        initPinchZoom()
+        initButtons()
+        setupGlobalAutoButton()
+
+        requestPermissionsIfNeeded()
+    }
+
+    // -----------------------------------------------
+    // Insets
+    // -----------------------------------------------
+    private fun applyWindowInset() {
         ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
             val status = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
 
@@ -54,10 +63,14 @@ class MainActivity : AppCompatActivity() {
             binding.fpsText.updateLayoutParams<ViewGroup.MarginLayoutParams> {
                 topMargin = status + dp(56 + 8)
             }
-
             insets
         }
+    }
 
+    // -----------------------------------------------
+    // Camera Controller
+    // -----------------------------------------------
+    private fun initCameraController() {
         controller = Camera2Controller(
             context = this,
             overlayView = binding.overlayView,
@@ -71,22 +84,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         )
+    }
 
-        binding.btnAspect.setOnClickListener {
-            val mode = controller.cycleAspectMode()
-            setAspectText(mode)
-        }
-
-        binding.btnFlash.setOnClickListener {
-            val next = when (controller.getFlashMode()) {
-                Camera2Controller.FlashMode.OFF -> Camera2Controller.FlashMode.TORCH
-                Camera2Controller.FlashMode.TORCH -> Camera2Controller.FlashMode.OFF
-                else -> Camera2Controller.FlashMode.OFF
-            }
-            controller.setFlashMode(next)
-            Toast.makeText(this, "Flash: ${flashLabel(next)}", Toast.LENGTH_SHORT).show()
-        }
-
+    // -----------------------------------------------
+    // Pinch Zoom
+    // -----------------------------------------------
+    private fun initPinchZoom() {
         scaleDetector = ScaleGestureDetector(
             this,
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -101,12 +104,12 @@ class MainActivity : AppCompatActivity() {
             scaleDetector.onTouchEvent(ev)
             true
         }
-
-        setupUi()
-        requestPermissionsIfNeeded()
     }
 
-    private fun setupUi() {
+    // -----------------------------------------------
+    // Buttons
+    // -----------------------------------------------
+    private fun initButtons() {
         binding.btnShutter.setOnClickListener { controller.takePicture() }
 
         binding.btnGallery.setOnClickListener {
@@ -118,9 +121,24 @@ class MainActivity : AppCompatActivity() {
             controller.setFlashMode(Camera2Controller.FlashMode.OFF)
         }
 
+        binding.btnFlash.setOnClickListener {
+            val next = when (controller.getFlashMode()) {
+                Camera2Controller.FlashMode.OFF -> Camera2Controller.FlashMode.TORCH
+                Camera2Controller.FlashMode.TORCH -> Camera2Controller.FlashMode.OFF
+                else -> Camera2Controller.FlashMode.OFF
+            }
+            controller.setFlashMode(next)
+            Toast.makeText(this, "Flash: ${flashLabel(next)}", Toast.LENGTH_SHORT).show()
+        }
+
+        binding.btnAspect.setOnClickListener {
+            val mode = controller.cycleAspectMode()
+            setAspectText(mode)
+        }
+
         binding.btnIso.setOnClickListener { showIsoOverlay() }
         binding.btnSec.setOnClickListener { showShutterOverlay() }
-        binding.btnWb.setOnClickListener { showWbOverlay() }
+        binding.btnWb.setOnClickListener { showEvOverlay() }   // ← 변경됨 (WB → EV)
     }
 
     private fun flashLabel(m: Camera2Controller.FlashMode) = when (m) {
@@ -129,28 +147,66 @@ class MainActivity : AppCompatActivity() {
         else -> "OFF"
     }
 
-    private fun dp(i: Int) = (resources.displayMetrics.density * i + 0.5f).toInt()
-
-    private fun space(wDp: Int) = Space(this).apply {
-        layoutParams = LinearLayout.LayoutParams(dp(wDp), 1)
+    // -----------------------------------------------
+    // Global AUTO / MANUAL
+    // -----------------------------------------------
+    private fun setupGlobalAutoButton() {
+        binding.btnAutoAll.setOnClickListener {
+            isAllAuto = !isAllAuto
+            applyGlobalAutoState()
+        }
+        applyGlobalAutoState()
     }
 
-    private fun removeAllSettingOverlays() {
-        val tags = setOf(TAG_ISO, TAG_SHT, TAG_WB)
-        val toRemove = mutableListOf<View>()
+    @SuppressLint("SetTextI18n")
+    private fun applyGlobalAutoState() {
+        if (isAllAuto) {
+            binding.btnAutoAll.text = "AUTO"
+            controller.setAllAuto()
+            disableSliders()
+        } else {
+            binding.btnAutoAll.text = "MANUAL"
+            controller.setAllManual()
+            enableSliders()
+        }
+    }
+
+    private fun disableSliders() {
+        listOf(TAG_ISO, TAG_SHT, TAG_EV).forEach { tag ->
+            findOverlay(tag)?.let { recursiveEnable(it, false) }
+        }
+    }
+
+    private fun enableSliders() {
+        listOf(TAG_ISO, TAG_SHT, TAG_EV).forEach { tag ->
+            findOverlay(tag)?.let { recursiveEnable(it, true) }
+        }
+    }
+
+    private fun findOverlay(tag: String): View? {
         for (i in 0 until rootFrame.childCount) {
             val v = rootFrame.getChildAt(i)
-            if (v.tag in tags) toRemove.add(v)
+            if (v.tag == tag) return v
         }
-        toRemove.forEach { rootFrame.removeView(it) }
+        return null
     }
 
+    private fun recursiveEnable(v: View, enabled: Boolean) {
+        v.isEnabled = enabled
+        if (v is ViewGroup) {
+            for (i in 0 until v.childCount)
+                recursiveEnable(v.getChildAt(i), enabled)
+        }
+    }
+
+    // -----------------------------------------------
+    // Overlay Factory
+    // -----------------------------------------------
     @SuppressLint("SetTextI18n")
     private fun makeOverlay(
         tag: String,
         titleText: String,
         initialValueText: String,
-        onAuto: () -> Unit,
         content: (container: LinearLayout, valueText: TextView) -> Unit
     ): LinearLayout {
 
@@ -193,61 +249,41 @@ class MainActivity : AppCompatActivity() {
         })
         titleRow.addView(valueText)
 
-        val rowAuto = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        val slider = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(0, dp(8), 0, 0)
         }
 
-        val autoText = TextView(this).apply {
-            text = "AUTO"
-            setTextColor(0xFFBBB3FF.toInt())
-            setPadding(dp(8), dp(4), dp(8), dp(4))
-            setOnClickListener { onAuto() }
-        }
-
-        val sliderContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                .apply { leftMargin = dp(12) }
-        }
-
-        rowAuto.addView(autoText)
-        rowAuto.addView(sliderContainer)
-
         overlay.addView(titleRow)
-        overlay.addView(rowAuto)
+        overlay.addView(slider)
 
-        content(sliderContainer, valueText)
+        content(slider, valueText)
 
         rootFrame.addView(overlay)
         overlay.bringToFront()
 
+        if (isAllAuto) recursiveEnable(overlay, false)
+
         return overlay
     }
 
-    // -----------------------------------------------------------------------------------------
+    // -----------------------------------------------
     // ISO
-    // -----------------------------------------------------------------------------------------
+    // -----------------------------------------------
     private fun showIsoOverlay() {
-        removeAllSettingOverlays()
+        removeAllOverlays()
 
         makeOverlay(
             tag = TAG_ISO,
             titleText = "ISO",
-            initialValueText = "—",
-            onAuto = {
-                controller.setManualEnabled(false)
-            }
+            initialValueText = "—"
         ) { container, valueText ->
 
             val maxIso = 3200
-            val seek = SeekBar(this).apply {
-                max = maxIso
-            }
+            val seek = SeekBar(this).apply { max = maxIso }
 
-            fun apply(p: Int) {
-                controller.setManualEnabled(true)
+            fun applyIso(p: Int) {
+                if (isAllAuto) return
                 val iso = p.coerceIn(50, maxIso)
                 valueText.text = "ISO $iso"
                 controller.setIso(iso)
@@ -255,31 +291,23 @@ class MainActivity : AppCompatActivity() {
 
             val init = controller.getCurrentIso().coerceIn(0, maxIso)
             seek.progress = init
-            apply(init)
+            applyIso(init)
 
-            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, f: Boolean) = apply(p)
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-
+            seek.setOnSeekBarChangeListener(onSeekChanged { p -> applyIso(p) })
             container.addView(seek)
         }
     }
 
-    // -----------------------------------------------------------------------------------------
-    // SHUTTER
-    // -----------------------------------------------------------------------------------------
+    // -----------------------------------------------
+    // Shutter
+    // -----------------------------------------------
     private fun showShutterOverlay() {
-        removeAllSettingOverlays()
+        removeAllOverlays()
 
         makeOverlay(
             tag = TAG_SHT,
             titleText = "Shutter Speed",
-            initialValueText = "—",
-            onAuto = {
-                controller.setManualEnabled(false)
-            }
+            initialValueText = "—"
         ) { container, valueText ->
 
             val seek = SeekBar(this).apply { max = 1000 }
@@ -288,24 +316,22 @@ class MainActivity : AppCompatActivity() {
                 val min = 1.0 / 8000.0
                 val max = 1.0 / 60.0
                 val t = p / 1000.0
-                val sec = min * Math.pow(max / min, t)
-                return (sec * 1e9).toLong()
+                return (min * Math.pow(max / min, t) * 1e9).toLong()
             }
 
             fun nsToProgress(ns: Long): Int {
                 val min = 1.0 / 8000.0
                 val max = 1.0 / 60.0
                 var sec = ns / 1e9
-                if (sec < min) sec = min
-                if (sec > max) sec = max
+                sec = sec.coerceIn(min, max)
                 val t = kotlin.math.ln(sec / min) / kotlin.math.ln(max / min)
-                return (t * 1000).toInt().coerceIn(0, 1000)
+                return (t * 1000).toInt()
             }
 
-            fun apply(p: Int) {
-                controller.setManualEnabled(true)
-                val req = progressToNs(p)
-                controller.setExposureTimeNs(req)
+            fun applyShutter(p: Int) {
+                if (isAllAuto) return
+                val ns = progressToNs(p)
+                controller.setExposureTimeNs(ns)
 
                 val applied = controller.getAppliedExposureNs()
                 val sec = applied / 1_000_000_000.0
@@ -314,66 +340,77 @@ class MainActivity : AppCompatActivity() {
 
             val init = nsToProgress(controller.getAppliedExposureNs())
             seek.progress = init
-            apply(init)
+            applyShutter(init)
 
-            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, f: Boolean) = apply(p)
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-
+            seek.setOnSeekBarChangeListener(onSeekChanged { p -> applyShutter(p) })
             container.addView(seek)
         }
     }
 
-    // -----------------------------------------------------------------------------------------
-    // WB
-    // -----------------------------------------------------------------------------------------
-    private fun showWbOverlay() {
-        removeAllSettingOverlays()
+    // -----------------------------------------------
+    // EV (노출 보정) — WB 대체됨
+    // -----------------------------------------------
+    private fun showEvOverlay() {
+        removeAllOverlays()
 
         makeOverlay(
-            tag = TAG_WB,
-            titleText = "White Balance (K)",
-            initialValueText = "—",
-            onAuto = {
-                controller.setManualEnabled(false)
-            }
+            tag = TAG_EV,
+            titleText = "Exposure Compensation (EV)",
+            initialValueText = "—"
         ) { container, valueText ->
 
-            val seek = SeekBar(this).apply { max = 8000 }
-
-            fun apply(p: Int) {
-                controller.setManualEnabled(true)
-                val k = p.coerceIn(2000, 8000)
-                valueText.text = "A ${k}K"
-                controller.setAwbTemperature(k)
+            val (minEv, maxEv) = controller.getAeCompRange()
+            val seek = SeekBar(this).apply {
+                max = maxEv - minEv
             }
 
-            val init = controller.getCurrentKelvin().coerceIn(0, 8000)
+            fun applyEv(p: Int) {
+                if (isAllAuto) return
+                val ev = minEv + p
+                valueText.text = "EV $ev"
+                controller.setExposureCompensation(ev)
+            }
+
+            val init = controller.getCurrentEv() - minEv
             seek.progress = init
-            apply(init)
+            applyEv(init)
 
-            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, f: Boolean) = apply(p)
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-
+            seek.setOnSeekBarChangeListener(onSeekChanged { p -> applyEv(p) })
             container.addView(seek)
         }
     }
 
-    private fun requestPermissionsIfNeeded() {
-        val needs = mutableListOf(Manifest.permission.CAMERA)
-        if (Build.VERSION.SDK_INT >= 33) needs += Manifest.permission.READ_MEDIA_IMAGES
-        else needs += Manifest.permission.READ_EXTERNAL_STORAGE
-        Permissions.requestIfNeeded(this, needs.toTypedArray())
+    // -----------------------------------------------
+    // Common
+    // -----------------------------------------------
+    private fun onSeekChanged(block: (Int) -> Unit) =
+        object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, b: Boolean) = block(p)
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        }
+
+    private fun removeAllOverlays() {
+        val tags = setOf(TAG_ISO, TAG_SHT, TAG_EV)
+        val removeList = mutableListOf<View>()
+        for (i in 0 until rootFrame.childCount) {
+            val v = rootFrame.getChildAt(i)
+            if (v.tag in tags) removeList.add(v)
+        }
+        removeList.forEach { rootFrame.removeView(it) }
     }
 
+    private fun dp(i: Int) = (resources.displayMetrics.density * i + 0.5f).toInt()
+
+    // -----------------------------------------------
+    // Lifecycle
+    // -----------------------------------------------
     override fun onResume() {
         super.onResume()
         controller.onResume()
+        controller.setAllAuto()
+        isAllAuto = true
+        binding.btnAutoAll.text = "AUTO"
     }
 
     override fun onPause() {
@@ -381,13 +418,26 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
     }
 
+    // -----------------------------------------------
+    // Permissions
+    // -----------------------------------------------
+    private fun requestPermissionsIfNeeded() {
+        val needs = mutableListOf(Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT >= 33)
+            needs += Manifest.permission.READ_MEDIA_IMAGES
+        else
+            needs += Manifest.permission.READ_EXTERNAL_STORAGE
+
+        Permissions.requestIfNeeded(this, needs.toTypedArray())
+    }
+
+    // -----------------------------------------------
+    // Utils
+    // -----------------------------------------------
     private fun formatAsFraction(sec: Double): String {
-        return if (sec >= 1.0) {
-            String.format(Locale.US, "%.1f s", sec)
-        } else {
-            val denom = (1.0 / sec).toInt()
-            "1/$denom s"
-        }
+        if (sec >= 1.0) return String.format(Locale.US, "%.1f s", sec)
+        val d = (1.0 / sec).toInt()
+        return "1/$d s"
     }
 
     private fun setAspectText(mode: Camera2Controller.AspectMode) {
