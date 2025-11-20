@@ -91,7 +91,7 @@ class Camera2Controller(
 
     // aspect
     enum class AspectMode { RATIO_1_1, RATIO_3_4, RATIO_9_16 }
-    private var aspectMode = AspectMode.RATIO_3_4
+    private var aspectMode = AspectMode.RATIO_9_16
 
 
     // shutter overlay
@@ -140,11 +140,8 @@ class Camera2Controller(
             onSaved(saveJpeg(finalBytes))
         }
 
-
-
-
-
-
+    // Camera2Controller 안에
+    fun getAspectMode(): AspectMode = aspectMode
 
     fun getFlashMode() = flashMode
     fun setFlashMode(m: FlashMode) { flashMode = m; updateRepeating() }
@@ -202,9 +199,10 @@ class Camera2Controller(
     fun cycleAspectMode(): AspectMode {
         aspectMode = when (aspectMode) {
 
-            AspectMode.RATIO_1_1 -> AspectMode.RATIO_3_4
-            AspectMode.RATIO_3_4 -> AspectMode.RATIO_9_16
-            AspectMode.RATIO_9_16 -> AspectMode.RATIO_1_1
+            AspectMode.RATIO_9_16 -> AspectMode.RATIO_1_1   // 16:9 다음 1:1
+            AspectMode.RATIO_1_1 -> AspectMode.RATIO_3_4    // 1:1 다음 4:3
+            AspectMode.RATIO_3_4 -> AspectMode.RATIO_9_16   // 4:3 다음 16:9
+
         }
         Log.d(TAG, "cycleAspectMode -> $aspectMode")
 

@@ -54,6 +54,17 @@ class MainActivity : AppCompatActivity() {
 
         requestPermissionsIfNeeded()
         initMask()
+
+        setAspectText(Camera2Controller.AspectMode.RATIO_9_16)
+
+
+        // 🔹 현재 aspect 모드(초기 4:3 등)에 맞춰 레터박스 한 번 세팅
+        binding.previewContainer.post {
+            updateMask(controller.getAspectMode())
+        }
+
+        setupGlobalAutoButton()
+        requestPermissionsIfNeeded()
     }
 
     private fun updateMask(mode: Camera2Controller.AspectMode) {
