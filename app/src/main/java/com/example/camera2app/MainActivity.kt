@@ -358,7 +358,8 @@ class MainActivity : AppCompatActivity() {
 
                 val ev = (p - 400) / 100.0  // 중앙=0, 양쪽=±4
                 valueText.text = String.format(Locale.US, "%.1f", ev)
-                controller.setExposureCompensation(ev.toInt())
+                controller.applyEv(ev)
+
             }
 
             seek.progress = 400

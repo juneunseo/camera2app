@@ -872,4 +872,27 @@ class Camera2Controller(
             textureView.surfaceTextureListener = surfaceListener
         }
     }
+    fun applyEv(ev: Double) {
+        // 기준 노출시간(4ms)
+        val baseExp = 4_000_000L
+
+        // EV 공식
+        val factor = Math.pow(2.0, ev)
+        var newExp = (baseExp * factor).toLong()
+
+        // 60fps 프레임 유지 위한 최대 노출 제한 (1/60초 ≈ 16.6ms)
+        val maxExp = frameNs - 300_000L
+        if (newExp > maxExp) newExp = maxExp
+
+        // 너무 짧지 않도록 최소 제한
+        val minExp = 200_000L  // 0.2ms
+        if (newExp < minExp) newExp = minExp
+
+        currentExposureNs = newExp
+
+        manualEnabled = true   // EV를 적용하면 강제로 매뉴얼 모드로
+
+        updateRepeating()
+    }
+
 }
