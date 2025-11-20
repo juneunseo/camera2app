@@ -16,6 +16,7 @@
         android:id="@+id/maskBottom"
         android:layout_width="match_parent"
         android:layout_height="0dp"
+        android:layout_gravity="bottom"
         android:background="#000000" />
 
 </FrameLayout>
