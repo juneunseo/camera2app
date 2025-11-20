@@ -36,6 +36,9 @@ class MainActivity : AppCompatActivity() {
 
     private var isAllAuto = true
 
+    private lateinit var maskTop: View
+    private lateinit var maskBottom: View
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -50,7 +53,36 @@ class MainActivity : AppCompatActivity() {
         setupGlobalAutoButton()
 
         requestPermissionsIfNeeded()
+        initMask()
     }
+
+    private fun updateMask(mode: Camera2Controller.AspectMode) {
+        val previewH = binding.previewContainer.height
+        val previewW = binding.previewContainer.width
+
+        val aspect = when (mode) {
+            Camera2Controller.AspectMode.RATIO_1_1 -> 1f
+            Camera2Controller.AspectMode.RATIO_3_4 -> 3f / 4f
+            Camera2Controller.AspectMode.RATIO_9_16 -> 9f / 16f
+        }
+
+        val desiredH = (previewW / aspect).toInt()
+        val mask = (previewH - desiredH) / 2
+
+        maskTop.layoutParams.height = mask.coerceAtLeast(0)
+        maskBottom.layoutParams.height = mask.coerceAtLeast(0)
+
+        maskTop.requestLayout()
+        maskBottom.requestLayout()
+    }
+
+
+    private fun initMask() {
+        val mask = layoutInflater.inflate(R.layout.overlay_mask, binding.previewContainer, true)
+        maskTop = mask.findViewById(R.id.maskTop)
+        maskBottom = mask.findViewById(R.id.maskBottom)
+    }
+
 
     private fun applyWindowInset() {
         ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
@@ -123,6 +155,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnAspect.setOnClickListener {
             val mode = controller.cycleAspectMode()
             setAspectText(mode)
+            updateMask(mode)
         }
 
 //        binding.btnIso.setOnClickListener { showIsoOverlay() }
@@ -444,7 +477,8 @@ class MainActivity : AppCompatActivity() {
             Camera2Controller.AspectMode.RATIO_1_1 -> "1:1"
             Camera2Controller.AspectMode.RATIO_3_4 -> "4:3"
             Camera2Controller.AspectMode.RATIO_9_16 -> "16:9"
-            Camera2Controller.AspectMode.FULL -> "FULL"
         }
     }
+
+
 }

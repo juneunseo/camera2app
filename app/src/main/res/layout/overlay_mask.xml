@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/maskRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- 상단 마스크 -->
+    <View
+        android:id="@+id/maskTop"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:background="#000000" />
+
+    <!-- 하단 마스크 -->
+    <View
+        android:id="@+id/maskBottom"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:background="#000000" />
+
+</FrameLayout>
