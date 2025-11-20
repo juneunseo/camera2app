@@ -52,15 +52,15 @@
             android:layout_height="1dp"
             android:layout_weight="1" />
 
-<!--        &lt;!&ndash; 화면비 버튼 (오른쪽) &ndash;&gt;-->
-<!--        <ImageButton-->
-<!--            android:id="@+id/btnAspect"-->
-<!--            android:layout_width="40dp"-->
-<!--            android:layout_height="40dp"-->
-<!--            android:background="@android:color/transparent"-->
-<!--            android:contentDescription="Aspect"-->
-<!--            app:srcCompat="@drawable/ic_aspect"-->
-<!--            android:padding="6dp" />-->
+        <!--        &lt;!&ndash; 화면비 버튼 (오른쪽) &ndash;&gt;-->
+        <!--        <ImageButton-->
+        <!--            android:id="@+id/btnAspect"-->
+        <!--            android:layout_width="40dp"-->
+        <!--            android:layout_height="40dp"-->
+        <!--            android:background="@android:color/transparent"-->
+        <!--            android:contentDescription="Aspect"-->
+        <!--            app:srcCompat="@drawable/ic_aspect"-->
+        <!--            android:padding="6dp" />-->
 
         <TextView
             android:id="@+id/btnAspect"
@@ -103,40 +103,54 @@
         android:paddingHorizontal="24dp"
         android:elevation="8dp">
 
-    <View
-        android:layout_width="0dp"
-        android:layout_height="1dp"
-        android:layout_weight="1" />
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
 
-    <!-- Shutter Speed -->
-    <ImageButton
-        android:id="@+id/btnSec"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:layout_marginHorizontal="8dp"
-        android:background="@android:color/transparent"
-        android:contentDescription="Shutter Speed"
-        app:srcCompat="@drawable/ic_shutter_speed" />
+        <!-- Shutter Speed -->
+        <ImageButton
+            android:id="@+id/btnSec"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginHorizontal="8dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Shutter Speed"
+            app:srcCompat="@drawable/ic_shutter_speed" />
 
-    <!-- ISO -->
-    <ImageButton
-        android:id="@+id/btnIso"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:layout_marginHorizontal="8dp"
-        android:background="@android:color/transparent"
-        android:contentDescription="ISO"
-        app:srcCompat="@drawable/ic_iso" />
+        <!-- Resolution -->
+        <TextView
+            android:id="@+id/btnResolution"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:gravity="center"
+            android:text="12M"
+            android:textColor="@android:color/white"
+            android:textSize="16sp"
+            android:padding="8dp"
+            android:background="@drawable/rounded_button_bg"
+            />
 
-    <!-- White Balance -->
-    <ImageButton
-        android:id="@+id/btnWb"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:layout_marginHorizontal="8dp"
-        android:background="@android:color/transparent"
-        android:contentDescription="White Balance"
-        app:srcCompat="@drawable/ic_white_balance" />
+
+
+        <!-- White Balance -->
+        <ImageButton
+            android:id="@+id/btnWb"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginHorizontal="8dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="White Balance"
+            app:srcCompat="@drawable/ic_white_balance" />
+
+        <TextView
+            android:id="@+id/btnAutoAll"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:padding="12dp"
+            android:text="AUTO"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"/>
 
         <View
             android:layout_width="0dp"
@@ -145,59 +159,60 @@
     </LinearLayout>
 
     <!-- 하단 바: 갤러리 / 셔터 / 카메라 전환 -->
-<LinearLayout
-android:id="@+id/bottomBar"
-android:layout_width="match_parent"
-android:layout_height="100dp"
-android:layout_gravity="bottom"
-android:orientation="horizontal"
-android:gravity="center"
-android:background="#D9000000"
-android:paddingHorizontal="24dp"
-android:elevation="8dp">
+    <LinearLayout
+        android:id="@+id/bottomBar"
+        android:layout_width="match_parent"
+        android:layout_height="100dp"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:background="#D9000000"
+        android:paddingHorizontal="24dp"
+        android:elevation="8dp">
 
-<ImageButton
-    android:id="@+id/btnGallery"
-    android:layout_width="48dp"
-    android:layout_height="48dp"
-    android:background="@android:color/transparent"
-    android:contentDescription="Open Gallery"
-    app:srcCompat="@drawable/ic_gallery" />
+        <ImageButton
+            android:id="@+id/btnGallery"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Open Gallery"
+            app:srcCompat="@drawable/ic_gallery" />
 
-<View
-    android:layout_width="0dp"
-    android:layout_height="1dp"
-    android:layout_weight="1" />
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
 
-<ImageButton
-    android:id="@+id/btnShutter"
-    android:layout_width="84dp"
-    android:layout_height="84dp"
-    android:background="@android:color/transparent"
-    android:contentDescription="Shutter"
-    app:srcCompat="@drawable/ic_shutter" />
+        <ImageButton
+            android:id="@+id/btnShutter"
+            android:layout_width="84dp"
+            android:layout_height="84dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Shutter"
+            app:srcCompat="@drawable/ic_shutter" />
 
-<View
-    android:layout_width="0dp"
-    android:layout_height="1dp"
-    android:layout_weight="1" />
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
 
-<ImageButton
-    android:id="@+id/btnSwitch"
-    android:layout_width="48dp"
-    android:layout_height="48dp"
-    android:background="@android:color/transparent"
-    android:contentDescription="Switch Camera"
-    app:srcCompat="@drawable/ic_switch_camera" />
-</LinearLayout>
+        <ImageButton
+            android:id="@+id/btnSwitch"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Switch Camera"
+            app:srcCompat="@drawable/ic_switch_camera" />
+    </LinearLayout>
 
     <!-- 셔터 플래시 -->
-<View
-android:id="@+id/shutterFlashView"
-android:layout_width="match_parent"
-android:layout_height="match_parent"
-android:background="#FFFFFF"
-android:alpha="0"
-android:clickable="false" />
+    <View
+        android:id="@+id/shutterFlashView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FFFFFF"
+        android:alpha="0"
+        android:clickable="false" />
 
-    </FrameLayout>
+
+</FrameLayout>
