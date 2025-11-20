@@ -103,8 +103,8 @@ class Camera2Controller(
     private var adaptiveResolution = false
     private lateinit var sizeLadder: List<Size>
     private var sizeIndex = 0
-    private val MAX_W = 1920
-    private val MAX_H = 1080
+    private val MAX_W = 4000
+    private val MAX_H = 4000
 
     // flash
     enum class FlashMode { OFF, AUTO, ON, TORCH }
@@ -345,7 +345,7 @@ class Camera2Controller(
         }
 
         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
-
+            applyCenterCropTransform()
         }
 
         override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
@@ -382,11 +382,7 @@ class Camera2Controller(
 
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
 
-        // 현재 aspectMode(1:1, 3:4, 9:16, FULL)에 맞는 preset 해상도 하나 정함
-        val desiredPreview = fixedPreviewSizeFor(aspectMode)
 
-        // 실제 디바이스가 지원하는 사이즈 중에서 가장 가까운 해상도 선택
-        previewSize = nearestSupportedPreviewSize(desiredPreview, map)
 
         Log.d(TAG, "openCamera: aspect=$aspectMode, previewSize=$previewSize")
 
@@ -437,77 +433,53 @@ class Camera2Controller(
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
         val jpegSizes = map.getOutputSizes(ImageFormat.JPEG)
 
-        val sensorAspect = sensorArray.width().toFloat() / sensorArray.height()
-        val targetAspect = when (aspectMode) {
-            AspectMode.RATIO_1_1 -> 1f
-            AspectMode.RATIO_3_4 -> 3f / 4f
-            AspectMode.RATIO_9_16 -> 9f / 16f
+        // 센서 비율 그대로 사용 (캡처에서도 센서 crop 영역만 저장)
+        // 비율 보정은 applyZoomAndAspect()의 sensor crop이 담당하므로,
+        // JPEG 해상도는 가장 큰 센서 해상도 그대로 사용하면 됨.
+        val captureSize = jpegSizes.maxBy { it.width * it.height }
 
-        }
+        Log.d(
+            TAG,
+            "setupImageReader: selected JPEG size = ${captureSize.width} x ${captureSize.height}"
+        )
 
-        val captureSize = jpegSizes.minBy {
-            val a = it.width.toFloat() / it.height
-            abs(a - targetAspect)
-        }
-
-        Log.d(TAG, "setupImageReader: aspect=$aspectMode, targetAspect=$targetAspect, captureSize=$captureSize")
-
+        // 기존 ImageReader 제거
         imageReader?.close()
+
+        // 새로운 ImageReader 생성 (crop 없이 전체 이미지 받아옴)
         imageReader = ImageReader.newInstance(
             captureSize.width,
             captureSize.height,
             ImageFormat.JPEG,
-            2
+            3
         )
 
+        // ★ 여기서 JPEG cropping 제거 → 센서 crop이 그대로 저장됨
         imageReader!!.setOnImageAvailableListener({ reader ->
+
             val img = reader.acquireNextImage() ?: return@setOnImageAvailableListener
+
             val buf = img.planes[0].buffer
             val bytes = ByteArray(buf.remaining()).apply { buf.get(this) }
             img.close()
 
+            // JPEG → Bitmap
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
 
-            // rotate according to JPEG_ORIENTATION
+            // Orientation only
             val rotated = rotateBitmap(bmp, lastJpegOrientation)
 
-            val aspect = when (aspectMode) {
-                AspectMode.RATIO_1_1 -> 1f
-                AspectMode.RATIO_3_4 -> 3f / 4f
-                AspectMode.RATIO_9_16 -> 9f / 16f
-
-            }
-
-            val w = rotated.width
-            val h = rotated.height
-            val currentAspect = w.toFloat() / h
-
-            var cropW = w
-            var cropH = h
-
-            if (currentAspect > aspect)
-                cropW = (h * aspect).toInt()
-            else
-                cropH = (w / aspect).toInt()
-
-            val left = (w - cropW) / 2
-            val top = (h - cropH) / 2
-
-            Log.d(
-                TAG,
-                "onImageAvailable: mode=$aspectMode, rotated=${w}x$h, currentAspect=$currentAspect, " +
-                        "targetAspect=$aspect, crop=${cropW}x$cropH"
-            )
-
-            val cropped = Bitmap.createBitmap(rotated, left, top, cropW, cropH)
-
+            // 다시 JPEG로 압축
             val out = ByteArrayOutputStream()
-            cropped.compress(Bitmap.CompressFormat.JPEG, 95, out)
+            rotated.compress(Bitmap.CompressFormat.JPEG, 96, out)
             val finalBytes = out.toByteArray()
 
+            // 저장
             onSaved(saveJpeg(finalBytes))
+
         }, bgHandler)
     }
+
 
     // =========================================================================================
     // Preview start
@@ -534,6 +506,7 @@ class Camera2Controller(
                     }
 
                     s.setRepeatingRequest(req.build(), null, bgHandler)
+                    textureView.post { applyCenterCropTransform() }
                 }
 
                 override fun onConfigureFailed(s: CameraCaptureSession) {}
@@ -679,19 +652,54 @@ class Camera2Controller(
 
 
 
+//    private fun applyZoomAndAspect(builder: CaptureRequest.Builder) {
+//        if (!::sensorArray.isInitialized) return
+//
+//        val base = sensorArray
+//
+//        var zoom = currentZoom
+//
+//        // ★ 아이폰 스타일 16:9 디지털 줌
+//        if (aspectMode == AspectMode.RATIO_9_16) {
+//            zoom *= 1.2f  // 아이폰과 비슷한 확대량
+//        }
+//
+//        zoom = zoom.coerceAtLeast(1f)
+//
+//        val cropW = (base.width() / zoom).toInt()
+//        val cropH = (base.height() / zoom).toInt()
+//
+//        val cx = base.centerX()
+//        val cy = base.centerY()
+//
+//        val left = cx - cropW / 2
+//        val top = cy - cropH / 2
+//
+//        val rect = Rect(left, top, left + cropW, top + cropH)
+//        builder.set(CaptureRequest.SCALER_CROP_REGION, rect)
+//    }
+
     private fun applyZoomAndAspect(builder: CaptureRequest.Builder) {
         if (!::sensorArray.isInitialized) return
 
         val base = sensorArray
-
         var zoom = currentZoom
 
-        // ★ 아이폰 스타일 16:9 디지털 줌
-        if (aspectMode == AspectMode.RATIO_9_16) {
-            zoom *= 1.2f  // 아이폰과 비슷한 확대량
+        val targetRatio = when (aspectMode) {
+            AspectMode.RATIO_1_1 -> 1f
+            AspectMode.RATIO_3_4 -> 3f / 4f
+            AspectMode.RATIO_9_16 -> 9f / 16f
         }
 
-        zoom = zoom.coerceAtLeast(1f)
+        val sensorRatio = base.width().toFloat() / base.height().toFloat()
+
+        val fillZoom = if (sensorRatio > targetRatio) {
+            sensorRatio / targetRatio
+        } else {
+            targetRatio / sensorRatio
+        }
+
+        zoom = max(zoom, fillZoom)
 
         val cropW = (base.width() / zoom).toInt()
         val cropH = (base.height() / zoom).toInt()
@@ -699,12 +707,45 @@ class Camera2Controller(
         val cx = base.centerX()
         val cy = base.centerY()
 
-        val left = cx - cropW / 2
-        val top = cy - cropH / 2
+        val rect = Rect(
+            cx - cropW / 2,
+            cy - cropH / 2,
+            cx + cropW / 2,
+            cy + cropH / 2
+        )
 
-        val rect = Rect(left, top, left + cropW, top + cropH)
         builder.set(CaptureRequest.SCALER_CROP_REGION, rect)
     }
+
+
+
+    fun applyCenterCropTransform() {
+        val vw = textureView.width.toFloat()
+        val vh = textureView.height.toFloat()
+        if (vw <= 0 || vh <= 0) return
+
+        // 카메라 프리뷰 버퍼 크기
+        val bw = previewSize.width.toFloat()
+        val bh = previewSize.height.toFloat()
+
+        val cx = vw / 2f
+        val cy = vh / 2f
+
+        // 화면을 꽉 채우는 uniform 스케일 (X=Y)
+        val scale = max(vw / bw, vh / bh)
+
+        val m = Matrix()
+        m.setScale(scale, scale, cx, cy)
+        textureView.setTransform(m)
+
+        // 오버레이는 전체 뷰 기준
+        val rect = RectF(0f, 0f, vw, vh)
+        overlayView.setVisibleRect(rect)
+        overlayView.invalidate()
+    }
+
+
+
 
 
 
@@ -725,54 +766,30 @@ class Camera2Controller(
 
     // 위 preset과 가장 가까운, 실제 "지원되는" 프리뷰 사이즈를 선택
     private fun nearestSupportedPreviewSize(
-        desired: Size,
+        desiredAspect: Float,
         map: StreamConfigurationMap
     ): Size {
-        val all = map.getOutputSizes(SurfaceTexture::class.java)
-            .filter { it.width <= MAX_W && it.height <= MAX_H }
 
-        // 혹시라도 필터 후 비어 있으면 그냥 첫 번째 사용
-        if (all.isEmpty()) return map.getOutputSizes(SurfaceTexture::class.java).first()
+        val all: Array<Size> = map.getOutputSizes(SurfaceTexture::class.java)
 
-        return all.minBy { s ->
-            val dw = (s.width - desired.width).toDouble()
-            val dh = (s.height - desired.height).toDouble()
-            dw * dw + dh * dh
+        // 1) aspect(±1%) 맞는 후보만 필터
+        val candidates = all.filter { s ->
+            val r = s.width.toFloat() / s.height
+            kotlin.math.abs(r - desiredAspect) < 0.01f
         }
+
+        // 2) 후보가 있으면 candidates, 없으면 전체 all 사용
+        val list: List<Size> = if (candidates.isNotEmpty()) candidates else all.toList()
+
+        // 3) 리스트에서 가장 큰 해상도 선택
+        return list.maxBy { s -> s.width.toLong() * s.height.toLong() }
     }
 
-    private fun buildSizeLadder(map: StreamConfigurationMap) {
-        val all = map.getOutputSizes(SurfaceTexture::class.java)
-            .filter { it.width <= MAX_W && it.height <= MAX_H }
-
-        sizeLadder = all.sortedByDescending { it.width * it.height }
-        sizeIndex = 0
-    }
 
     private fun maybeSwitchPreviewAspect() {
-        if (!::chars.isInitialized) return
-
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
-        val targetAspect = when (aspectMode) {
-            AspectMode.RATIO_1_1 -> 1f
-            AspectMode.RATIO_3_4 -> 3f / 4f
-            AspectMode.RATIO_9_16 -> 9f / 16f
 
 
-        }
 
-        val newSize = map.getOutputSizes(SurfaceTexture::class.java)
-            .filter { it.width <= MAX_W && it.height <= MAX_H }
-            .minBy {
-                val a = it.width.toFloat() / it.height
-                abs(a - targetAspect)
-            }
-
-        if (newSize != previewSize) {
-            previewSize = newSize
-            val st = textureView.surfaceTexture
-            st?.setDefaultBufferSize(newSize.width, newSize.height)
-        }
     }
 
     // =========================================================================================
@@ -866,6 +883,7 @@ class Camera2Controller(
         }
 
         session?.setRepeatingRequest(req.build(), null, bgHandler)
+        textureView.post { applyCenterCropTransform() }
 
     }
 

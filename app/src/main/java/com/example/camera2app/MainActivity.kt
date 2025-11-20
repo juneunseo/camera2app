@@ -23,6 +23,10 @@ import com.example.camera2app.gallery.GalleryActivity
 import com.example.camera2app.util.Permissions
 import java.util.Locale
 
+import android.graphics.RenderEffect
+import android.graphics.Shader
+
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
@@ -65,7 +69,29 @@ class MainActivity : AppCompatActivity() {
 
         setupGlobalAutoButton()
         requestPermissionsIfNeeded()
+
     }
+
+    // 프리뷰에 블러/디밍 효과 주는 함수
+    private fun setPreviewBlur(enabled: Boolean) {
+        // S(31) 이상: 진짜 블러
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            if (enabled) {
+                binding.textureView.setRenderEffect(
+                    RenderEffect.createBlurEffect(
+                        100f, 100f,
+                        Shader.TileMode.CLAMP
+                    )
+                )
+            } else {
+                binding.textureView.setRenderEffect(null)
+            }
+        } else {
+            // 그 이하 버전: 알파만 살짝 줄여서 페이드 효과
+            binding.textureView.alpha = if (enabled) 0.3f else 1f
+        }
+    }
+
 
     private fun updateMask(mode: Camera2Controller.AspectMode) {
         val previewH = binding.previewContainer.height
@@ -164,10 +190,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnAspect.setOnClickListener {
+            // 1) 블러 ON
+            setPreviewBlur(true)
+
+            // 2) 비율 전환 + 레터박스는 즉시 변경
             val mode = controller.cycleAspectMode()
             setAspectText(mode)
             updateMask(mode)
+
+            // 3) 0.3초 후 블러 해제
+            binding.textureView.postDelayed({
+                setPreviewBlur(false)
+            }, 500L)
         }
+
 
 //        binding.btnIso.setOnClickListener { showIsoOverlay() }
         binding.btnSec.setOnClickListener { showShutterOverlay() }
