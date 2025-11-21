@@ -26,6 +26,9 @@ import java.util.Locale
 import android.graphics.RenderEffect
 import android.graphics.Shader
 
+import android.view.MotionEvent
+
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
@@ -36,6 +39,10 @@ class MainActivity : AppCompatActivity() {
     private val TAG_ISO = "overlayIso"
     private val TAG_SHT = "overlayShutter"
     private val TAG_EV = "overlayEv"   // ★ WB → EV 로 변경
+
+    private val TAG_TAP_EV = "tapEvSlider"
+    private var tapEvSlider: View? = null
+
 
     private var isAllAuto = true
 
@@ -122,11 +129,115 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
-        binding.textureView.setOnTouchListener { _, ev ->
+        // 🔥 터치 리스너는 overlayView에 단다 (프리뷰 위 레이어)
+        binding.overlayView.setOnTouchListener { _, ev ->
+            // 핀치 줌
             scaleDetector.onTouchEvent(ev)
-            true
+
+            if (ev.actionMasked == MotionEvent.ACTION_UP && !scaleDetector.isInProgress) {
+
+                // 프리뷰 중앙 영역을 탭했을 때만 처리되도록 midBar / bottomBar 영역은 무시해도 됨
+                toggleTapEvSlider(ev.x, ev.y)
+            }
+
+            true  // ← 이거 꼭 true!
         }
     }
+
+
+    // 프리뷰 탭 시 EV 슬라이더를 열거나 닫는 함수
+    private fun toggleTapEvSlider(tapX: Float, tapY: Float) {
+        // 이미 떠 있으면 제거 = 토글 동작
+        if (tapEvSlider != null) {
+            rootFrame.removeView(tapEvSlider)
+            tapEvSlider = null
+            return
+        }
+
+        // AUTO 모드에서는 조절 불가 → 안 띄움
+//        if (isAllAuto) return
+
+        if (isAllAuto) {
+            isAllAuto = false
+            applyGlobalAutoState()   // 여기서 controller.setAllManual() 등 이미 호출됨
+        }
+
+        tapEvSlider = createTapEvSlider(tapX, tapY)
+        rootFrame.addView(tapEvSlider)
+        tapEvSlider?.bringToFront()
+    }
+
+    // 실제로 세로 EV 슬라이더 뷰를 만드는 함수
+    private fun createTapEvSlider(tapX: Float, tapY: Float): View {
+        val container = FrameLayout(this).apply {
+            tag = TAG_TAP_EV
+            setBackgroundColor(0x00000000) // 필요하면 0x66000000 같이 살짝 배경 주기
+        }
+
+        // 가로 SeekBar 하나 만들어서 회전해서 세로처럼 쓰기
+        val seek = SeekBar(this).apply {
+            max = 800          // 기존 EV 오버레이와 같은 범위: p=400 → EV 0.0
+            rotation = -90f    // 세로로 보이게
+            progress = 400     // 시작값: EV 0.0
+
+            // ★ EV 슬라이더 thumb 아이콘 추가
+            thumb = resources.getDrawable(R.drawable.ic_ev_thumb, null)
+
+            // ★ 트랙(선) 모양 지정
+            progressDrawable = resources.getDrawable(R.drawable.ev_slider_progress, null)
+        }
+
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                if (isAllAuto) return
+                val ev = (p - 400) / 100.0    // p: 0~800 → EV: -4.0 ~ +4.0
+                controller.applyEv(ev)
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+
+        // 세로 길이(px) – 대략 200dp 정도
+        val sliderHeight = dp(200)
+
+        // 화면 오른쪽에 붙이고, 탭한 y 근처에 중앙 맞추기
+        val lp = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            sliderHeight
+        ).apply {
+            gravity = Gravity.END
+            rightMargin = dp(16)
+
+            val half = sliderHeight / 2
+            val rawTop = tapY.toInt() - half
+            // 너무 위/아래로 안 가게 범위 제한
+            topMargin = rawTop.coerceIn(
+                dp(80),
+                binding.previewContainer.height - sliderHeight - dp(80)
+            )
+        }
+
+        // SeekBar를 컨테이너 안에 꽉 채워서 넣기
+        container.addView(
+            seek,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        container.layoutParams = lp
+
+        // 슬라이더 바깥쪽(컨테이너) 터치하면 닫히도록
+        container.setOnClickListener {
+            rootFrame.removeView(container)
+            tapEvSlider = null
+        }
+
+        return container
+    }
+
 
     private fun initButtons() {
 
@@ -201,6 +312,13 @@ class MainActivity : AppCompatActivity() {
             binding.btnAutoAll.text = "AUTO"
             controller.setAllAuto()
             disableOverlaySliders()
+
+            // ★ AUTO로 바꿀 때 탭 EV 슬라이더도 닫기
+            tapEvSlider?.let {
+                rootFrame.removeView(it)
+                tapEvSlider = null
+            }
+
         } else {
             binding.btnAutoAll.text = "MANUAL"
             controller.setAllManual()

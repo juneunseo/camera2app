@@ -19,7 +19,9 @@
         <com.example.camera2app.ui.OverlayView
             android:id="@+id/overlayView"
             android:layout_width="match_parent"
-            android:layout_height="match_parent" />
+            android:layout_height="match_parent"
+            android:clickable="true"
+            android:focusable="true"/>
     </FrameLayout>
 
     <!-- 상단 바: 플래시 + 화면비 -->

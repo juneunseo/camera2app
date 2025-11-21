@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 배경 라인 (아직 선택되지 않은 부분) -->
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <size android:height="4dp"/>
+            <solid android:color="#55FFFFFF"/>
+            <corners android:radius="2dp"/>
+        </shape>
+    </item>
+
+    <!-- 진행된 부분 (thumb 아래쪽) -->
+    <item android:id="@android:id/progress">
+        <shape android:shape="rectangle">
+            <size android:height="4dp"/>
+            <solid android:color="#FFFFFFFF"/>
+            <corners android:radius="2dp"/>
+        </shape>
+    </item>
+
+</layer-list>
