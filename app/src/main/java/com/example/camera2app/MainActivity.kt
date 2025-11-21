@@ -26,7 +26,6 @@ import java.util.Locale
 import android.graphics.RenderEffect
 import android.graphics.Shader
 
-
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
@@ -39,9 +38,6 @@ class MainActivity : AppCompatActivity() {
     private val TAG_EV = "overlayEv"   // ★ WB → EV 로 변경
 
     private var isAllAuto = true
-
-    private lateinit var maskTop: View
-    private lateinit var maskBottom: View
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,19 +53,14 @@ class MainActivity : AppCompatActivity() {
         setupGlobalAutoButton()
 
         requestPermissionsIfNeeded()
-        initMask()
 
         setAspectText(Camera2Controller.AspectMode.RATIO_9_16)
 
-
-        // 🔹 현재 aspect 모드(초기 4:3 등)에 맞춰 레터박스 한 번 세팅
-        binding.previewContainer.post {
-            updateMask(controller.getAspectMode())
-        }
+        // 🔹 예전 레터박스(maskTop/maskBottom)는 제거했으니
+        //     updateMask / initMask 호출도 더 이상 필요 없음.
 
         setupGlobalAutoButton()
         requestPermissionsIfNeeded()
-
     }
 
     // 프리뷰에 블러/디밍 효과 주는 함수
@@ -91,35 +82,6 @@ class MainActivity : AppCompatActivity() {
             binding.textureView.alpha = if (enabled) 0.3f else 1f
         }
     }
-
-
-    private fun updateMask(mode: Camera2Controller.AspectMode) {
-        val previewH = binding.previewContainer.height
-        val previewW = binding.previewContainer.width
-
-        val aspect = when (mode) {
-            Camera2Controller.AspectMode.RATIO_1_1 -> 1f
-            Camera2Controller.AspectMode.RATIO_3_4 -> 3f / 4f
-            Camera2Controller.AspectMode.RATIO_9_16 -> 9f / 16f
-        }
-
-        val desiredH = (previewW / aspect).toInt()
-        val mask = (previewH - desiredH) / 2
-
-        maskTop.layoutParams.height = mask.coerceAtLeast(0)
-        maskBottom.layoutParams.height = mask.coerceAtLeast(0)
-
-        maskTop.requestLayout()
-        maskBottom.requestLayout()
-    }
-
-
-    private fun initMask() {
-        val mask = layoutInflater.inflate(R.layout.overlay_mask, binding.previewContainer, true)
-        maskTop = mask.findViewById(R.id.maskTop)
-        maskBottom = mask.findViewById(R.id.maskBottom)
-    }
-
 
     private fun applyWindowInset() {
         ViewCompat.setOnApplyWindowInsetsListener(binding.previewContainer) { _, insets ->
@@ -193,10 +155,9 @@ class MainActivity : AppCompatActivity() {
             // 1) 블러 ON
             setPreviewBlur(true)
 
-            // 2) 비율 전환 + 레터박스는 즉시 변경
+            // 2) 비율 전환 (레터박스는 OverlayView에서 애니메이션으로 처리)
             val mode = controller.cycleAspectMode()
             setAspectText(mode)
-            updateMask(mode)
 
             // 3) 0.3초 후 블러 해제
             binding.textureView.postDelayed({
@@ -204,16 +165,13 @@ class MainActivity : AppCompatActivity() {
             }, 500L)
         }
 
-
-//        binding.btnIso.setOnClickListener { showIsoOverlay() }
+        //        binding.btnIso.setOnClickListener { showIsoOverlay() }
         binding.btnSec.setOnClickListener { showShutterOverlay() }
         binding.btnWb.setOnClickListener { showEvOverlay() } // ★ WB 버튼 → EV 슬라이더
 
         binding.btnResolution.setOnClickListener {
             toggleResolution()
         }
-
-
     }
 
     private fun toggleResolution() {
@@ -225,9 +183,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         controller.setResolutionPreset(next)
-        binding.btnResolution.text = if (next == Camera2Controller.ResolutionPreset.R12MP) "12M" else "50M"
+        binding.btnResolution.text =
+            if (next == Camera2Controller.ResolutionPreset.R12MP) "12M" else "50M"
     }
-
 
     private fun setupGlobalAutoButton() {
         binding.btnAutoAll.setOnClickListener {
@@ -474,7 +432,6 @@ class MainActivity : AppCompatActivity() {
 
             container.addView(seek)
         }
-
     }
 
     // ======================
@@ -526,6 +483,4 @@ class MainActivity : AppCompatActivity() {
             Camera2Controller.AspectMode.RATIO_9_16 -> "16:9"
         }
     }
-
-
 }

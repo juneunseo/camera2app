@@ -34,6 +34,10 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
+import android.animation.ValueAnimator
+import android.view.animation.AccelerateDecelerateInterpolator
+
+
 // === manual WB ===
 private var manualWbGains: RggbChannelVector? = null
 
@@ -117,6 +121,7 @@ class Camera2Controller(
     private var captureSize: Size = Size(4000, 3000) // 기본 12M
 
     // JPEG 저장 처리 리스너 (재사용)
+
     private val onImageAvailableListener =
         ImageReader.OnImageAvailableListener { reader ->
             val img = reader.acquireNextImage() ?: return@OnImageAvailableListener
@@ -128,17 +133,27 @@ class Camera2Controller(
             // 1) JPEG → Bitmap 로드
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
 
-            // 2) 회전만 적용 (crop 제거)
+            // 2) 회전 적용
             val rotated = rotateBitmap(bmp, lastJpegOrientation)
 
-            // 3) FULL 해상도 그대로 JPEG로 저장
+            // 3) 현재 화면비(aspectMode)에 맞춰 중앙 크롭
+            val cropped = cropToAspect(rotated, aspectMode)
+
+            // 4) 크롭된 걸 JPEG로 압축
             val out = ByteArrayOutputStream()
-            rotated.compress(Bitmap.CompressFormat.JPEG, 95, out)
+            cropped.compress(Bitmap.CompressFormat.JPEG, 95, out)
             val finalBytes = out.toByteArray()
 
-            // 4) 저장 콜백
+            // 5) 저장 콜백
             onSaved(saveJpeg(finalBytes))
         }
+
+
+
+    // ▼ 레터박스 애니메이션용
+    private var currentVisibleRect: RectF? = null
+    private var rectAnimator: ValueAnimator? = null
+
 
     // Camera2Controller 안에
     fun getAspectMode(): AspectMode = aspectMode
@@ -454,7 +469,7 @@ class Camera2Controller(
             3
         )
 
-        // ★ 여기서 JPEG cropping 제거 → 센서 crop이 그대로 저장됨
+// ★ 새로운 저장 리스너: 화면비에 맞춰 크롭하여 저장
         imageReader!!.setOnImageAvailableListener({ reader ->
 
             val img = reader.acquireNextImage() ?: return@setOnImageAvailableListener
@@ -463,21 +478,25 @@ class Camera2Controller(
             val bytes = ByteArray(buf.remaining()).apply { buf.get(this) }
             img.close()
 
-            // JPEG → Bitmap
+            // 1) JPEG → Bitmap 로드
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
 
-            // Orientation only
+            // 2) 회전 적용
             val rotated = rotateBitmap(bmp, lastJpegOrientation)
 
-            // 다시 JPEG로 압축
+            // 3) aspectMode 에 맞춰 중앙 크롭
+            val cropped = cropToAspect(rotated, aspectMode)
+
+            // 4) 최종 JPEG로 압축
             val out = ByteArrayOutputStream()
-            rotated.compress(Bitmap.CompressFormat.JPEG, 96, out)
+            cropped.compress(Bitmap.CompressFormat.JPEG, 96, out)
             val finalBytes = out.toByteArray()
 
-            // 저장
+            // 5) 저장
             onSaved(saveJpeg(finalBytes))
 
         }, bgHandler)
+
     }
 
 
@@ -731,18 +750,79 @@ class Camera2Controller(
         val cx = vw / 2f
         val cy = vh / 2f
 
-        // 화면을 꽉 채우는 uniform 스케일 (X=Y)
+        // === 1) TextureView는 그대로 "화면 꽉 채우기" ===
         val scale = max(vw / bw, vh / bh)
-
-        val m = Matrix()
-        m.setScale(scale, scale, cx, cy)
+        val m = Matrix().apply {
+            setScale(scale, scale, cx, cy)
+        }
         textureView.setTransform(m)
 
-        // 오버레이는 전체 뷰 기준
-        val rect = RectF(0f, 0f, vw, vh)
-        overlayView.setVisibleRect(rect)
-        overlayView.invalidate()
+        // === 2) 화면비에 맞는 "실제 프리뷰 영역 Rect" 계산 ===
+        val targetAspect = when (aspectMode) {
+            AspectMode.RATIO_1_1 -> 1f
+            AspectMode.RATIO_3_4 -> 3f / 4f
+            AspectMode.RATIO_9_16 -> 9f / 16f
+        }
+
+        val viewAspect = vw / vh
+
+        val targetRect = if (viewAspect < targetAspect) {
+            // 화면이 더 세로로 길다 → 위/아래 레터박스
+            val activeHeight = vw / targetAspect
+            val top = (vh - activeHeight) / 2f
+            RectF(
+                0f,
+                top,
+                vw,
+                top + activeHeight
+            )
+        } else {
+            // 화면이 더 가로로 넓다 → 좌우 레터박스
+            val activeWidth = vh * targetAspect
+            val left = (vw - activeWidth) / 2f
+            RectF(
+                left,
+                0f,
+                left + activeWidth,
+                vh
+            )
+        }
+
+        // === 3) 레터박스 Rect를 애니메이션으로 보간 ===
+        val startRect = currentVisibleRect ?: targetRect
+
+        // 처음 한 번은 바로 세팅 (튀지 않게)
+        if (currentVisibleRect == null) {
+            currentVisibleRect = RectF(targetRect)
+            overlayView.setVisibleRect(targetRect)
+            overlayView.invalidate()
+            return
+        }
+
+        rectAnimator?.cancel()
+
+        rectAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 220L
+            interpolator = AccelerateDecelerateInterpolator()
+
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                fun lerp(a: Float, b: Float): Float = a + (b - a) * t
+
+                val r = RectF(
+                    lerp(startRect.left,   targetRect.left),
+                    lerp(startRect.top,    targetRect.top),
+                    lerp(startRect.right,  targetRect.right),
+                    lerp(startRect.bottom, targetRect.bottom)
+                )
+                currentVisibleRect = r
+                overlayView.setVisibleRect(r)
+                overlayView.invalidate()
+            }
+        }
+        rectAnimator?.start()
     }
+
 
 
 
@@ -1031,6 +1111,36 @@ class Camera2Controller(
         // 세션 다시 만들기
         restartPreviewSession()
     }
+
+    private fun cropToAspect(src: Bitmap, mode: AspectMode): Bitmap {
+        val w = src.width
+        val h = src.height
+        val srcRatio = w.toFloat() / h.toFloat()
+
+        val targetRatio = when (mode) {
+            AspectMode.RATIO_1_1 -> 1f
+            AspectMode.RATIO_3_4 -> 3f / 4f     // 0.75
+            AspectMode.RATIO_9_16 -> 9f / 16f   // 0.5625
+        }
+
+        // 이미 거의 같은 비율이면 그냥 반환
+        if (kotlin.math.abs(srcRatio - targetRatio) < 0.01f) {
+            return src
+        }
+
+        return if (srcRatio > targetRatio) {
+            // 이미지가 더 "가로로 넓음" → 좌우 잘라냄
+            val newWidth = (h * targetRatio).toInt()
+            val x = (w - newWidth) / 2
+            Bitmap.createBitmap(src, x, 0, newWidth, h)
+        } else {
+            // 이미지가 더 "세로로 김" → 위아래 잘라냄
+            val newHeight = (w / targetRatio).toInt()
+            val y = (h - newHeight) / 2
+            Bitmap.createBitmap(src, 0, y, w, newHeight)
+        }
+    }
+
 
 
 
